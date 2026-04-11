@@ -1,0 +1,17 @@
+/openhijack
+/.codex
+
+# Go build and test artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.out
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/
