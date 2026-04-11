@@ -1,6 +1,9 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -20,6 +23,24 @@ const (
 	defaultListenPort = 443
 )
 
+const defaultConfigTemplate = `# OpenHijack 配置模板
+# 1. 修改下方的上游地址、模型和密钥
+# 2. 客户端连接本地代理时使用 mapped_model_id 与 auth_key
+# 3. 修改完成后运行 ./openhijack elevate
+
+mapped_model_id = "my-model"
+auth_key = "%s"
+current_config_index = 0
+
+[[config_groups]]
+name = "default"
+provider = "openai_chat_completion"
+api_url = "https://your-upstream-provider.example.com"
+model_id = "your-upstream-model"
+api_key = "your-upstream-api-key"
+middle_route = "/v1"
+`
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "elevate" {
 		runElevate()
@@ -36,6 +57,12 @@ func main() {
 	noManage := serveCmd.Bool("no-manage", false, "不自动管理证书和 hosts (手动指定证书时使用)")
 	configPath := serveCmd.String("config", "", "配置文件路径")
 
+	initCmd := flag.NewFlagSet("init", flag.ExitOnError)
+	initConfigPath := initCmd.String("config", "", "配置文件路径")
+	initForce := initCmd.Bool("force", false, "覆盖已存在的配置文件")
+
+	cleanupCmd := flag.NewFlagSet("cleanup", flag.ExitOnError)
+
 	pathsCmd := flag.NewFlagSet("paths", flag.ExitOnError)
 
 	if len(os.Args) < 2 {
@@ -48,6 +75,12 @@ func main() {
 		serveCmd.Parse(os.Args[2:])
 		configSrc := resolveConfigPath(*configPath)
 		runServe(configSrc, *host, *port, *debug, *disableSSLStrict, *forceStream, !*httpMode, *noManage)
+	case "init":
+		initCmd.Parse(os.Args[2:])
+		runInit(resolveConfigPath(*initConfigPath), *initForce)
+	case "cleanup", "uninstall":
+		cleanupCmd.Parse(os.Args[2:])
+		runCleanup()
 	case "paths":
 		pathsCmd.Parse(os.Args[2:])
 		printPaths()
@@ -63,9 +96,14 @@ func main() {
 func printUsage() {
 	fmt.Fprintf(os.Stderr, "openhijack - 本地 HTTPS 代理服务器\n\n")
 	fmt.Fprintf(os.Stderr, "用法:\n")
+	fmt.Fprintf(os.Stderr, "  openhijack init [选项]     生成配置模板\n")
 	fmt.Fprintf(os.Stderr, "  openhijack serve [选项]    启动代理服务器 (默认 HTTPS:443)\n")
+	fmt.Fprintf(os.Stderr, "  openhijack cleanup         移除 hosts、系统 CA 和本地证书\n")
 	fmt.Fprintf(os.Stderr, "  openhijack paths           显示数据路径\n")
 	fmt.Fprintf(os.Stderr, "  openhijack elevate         权限提升并启动 (sudo)\n\n")
+	fmt.Fprintf(os.Stderr, "init 选项:\n")
+	fmt.Fprintf(os.Stderr, "  --config string              配置文件路径\n")
+	fmt.Fprintf(os.Stderr, "  --force                      覆盖已存在的配置文件\n\n")
 	fmt.Fprintf(os.Stderr, "serve 选项:\n")
 	fmt.Fprintf(os.Stderr, "  --host string                监听地址 (默认: 所有接口)\n")
 	fmt.Fprintf(os.Stderr, "  --port int                   监听端口 (默认: %d)\n", defaultListenPort)
@@ -75,6 +113,60 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  --no-manage                  不自动管理证书和 hosts\n")
 	fmt.Fprintf(os.Stderr, "  --disable-ssl-strict-mode    禁用上游 TLS 证书校验\n")
 	fmt.Fprintf(os.Stderr, "  --force-stream               强制使用流模式\n")
+}
+
+func generateAuthKey() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
+}
+
+func createDefaultConfig(configPath string, force bool) (bool, error) {
+	if !force {
+		if _, err := os.Stat(configPath); err == nil {
+			return false, nil
+		} else if !os.IsNotExist(err) {
+			return false, err
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
+		return false, fmt.Errorf("创建配置目录失败: %w", err)
+	}
+
+	authKey, err := generateAuthKey()
+	if err != nil {
+		return false, fmt.Errorf("生成默认鉴权密钥失败: %w", err)
+	}
+
+	content := fmt.Sprintf(defaultConfigTemplate, authKey)
+	if err := os.WriteFile(configPath, []byte(content), 0600); err != nil {
+		return false, fmt.Errorf("写入配置文件失败: %w", err)
+	}
+
+	return true, nil
+}
+
+func runInit(configPath string, force bool) {
+	created, err := createDefaultConfig(configPath, force)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "初始化配置文件失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	if created {
+		fmt.Printf("已创建配置文件: %s\n", configPath)
+	} else {
+		fmt.Printf("配置文件已存在: %s\n", configPath)
+	}
+	fmt.Println("请先修改以下字段后再启动:")
+	fmt.Println("  - config_groups[0].api_url")
+	fmt.Println("  - config_groups[0].model_id")
+	fmt.Println("  - config_groups[0].api_key")
+	fmt.Println("  - mapped_model_id / auth_key")
+	fmt.Println("修改完成后可运行: ./openhijack elevate")
 }
 
 func runtimeHomeDir() string {
@@ -123,7 +215,7 @@ func resolveConfigPath(configPath string) string {
 
 func runServe(configPath string, host string, port int, debug bool, disableSSLStrict bool, forceStream bool, useTLS bool, noManage bool) {
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "配置文件不存在: %s\n", configPath)
+		fmt.Fprintf(os.Stderr, "配置文件不存在: %s\n请先运行 `openhijack init` 生成模板并修改上游配置。\n", configPath)
 		os.Exit(1)
 	}
 
@@ -170,10 +262,7 @@ func runServe(configPath string, host string, port int, debug bool, disableSSLSt
 		tlsCertFile, tlsKeyFile = certMgr.TLSCert()
 
 		cleanupFn = func() {
-			logger.Printf("清理: 移除 hosts 条目...")
-			if err := hostsMgr.RemoveEntry(logger.Printf); err != nil {
-				logger.Printf("清理 hosts 失败: %v", err)
-			}
+			cleanupRuntimeState(dataDir, logger.Printf)
 		}
 	} else if useTLS && noManage {
 		certMgr := cert.NewCertManager(dataDir)
@@ -210,6 +299,71 @@ func runServe(configPath string, host string, port int, debug bool, disableSSLSt
 	server.Wait()
 }
 
+func cleanupRuntimeState(dataDir string, logf func(string, ...interface{})) {
+	hostsMgr := hosts.NewHostsManager(dataDir)
+
+	logf("清理: 移除 hosts 条目...")
+	if err := hostsMgr.RemoveEntry(logf); err != nil {
+		logf("清理 hosts 失败: %v", err)
+	}
+
+	logf("清理: 移除系统 CA 信任...")
+	cert.RemoveCACert(logf)
+}
+
+func cleanupInstallation(dataDir string, logf func(string, ...interface{})) error {
+	cleanupRuntimeState(dataDir, logf)
+
+	certMgr := cert.NewCertManager(dataDir)
+	hostsMgr := hosts.NewHostsManager(dataDir)
+
+	var errs []error
+	if err := certMgr.RemoveLocalArtifacts(logf); err != nil {
+		errs = append(errs, fmt.Errorf("移除本地证书失败: %w", err))
+	}
+	if err := hostsMgr.RemoveBackup(logf); err != nil {
+		errs = append(errs, fmt.Errorf("移除 hosts 备份失败: %w", err))
+	}
+	if err := os.Remove(dataDir); err != nil {
+		if !os.IsNotExist(err) && !errors.Is(err, syscall.ENOTEMPTY) {
+			errs = append(errs, fmt.Errorf("移除数据目录失败: %w", err))
+		}
+	} else {
+		logf("已移除数据目录: %s", dataDir)
+	}
+	return errors.Join(errs...)
+}
+
+func runCleanup() {
+	if os.Geteuid() != 0 {
+		selfPath, err := os.Executable()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "无法获取可执行文件路径: %v\n", err)
+			os.Exit(1)
+		}
+
+		args := []string{"--preserve-env=OPENHIJACK_CONFIG", selfPath, "cleanup"}
+		args = append(args, os.Args[2:]...)
+
+		cmd := exec.Command("sudo", args...)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Env = os.Environ()
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "sudo 执行失败: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	logger := log.New(os.Stderr, "[openhijack] ", log.LstdFlags|log.Lmicroseconds)
+	if err := cleanupInstallation(getDataDir(), logger.Printf); err != nil {
+		fmt.Fprintf(os.Stderr, "清理失败: %v\n", err)
+		os.Exit(1)
+	}
+}
+
 func runElevate() {
 	if os.Geteuid() == 0 {
 		scriptUser := resolveScriptUser()
@@ -219,7 +373,7 @@ func runElevate() {
 		configSrc := envOrDefault("OPENHIJACK_CONFIG", configSrcDefault)
 
 		if _, err := os.Stat(configSrc); os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "配置文件不存在: %s\n", configSrc)
+			fmt.Fprintf(os.Stderr, "配置文件不存在: %s\n请先运行 `openhijack init` 生成模板并修改上游配置。\n", configSrc)
 			os.Exit(1)
 		}
 
@@ -237,37 +391,6 @@ func runElevate() {
 		}
 		if err := os.WriteFile(rootConfigFile, srcData, 0600); err != nil {
 			fmt.Fprintf(os.Stderr, "写入配置文件失败: %v\n", err)
-			os.Exit(1)
-		}
-
-		userDataDir := filepath.Join(userHome, ".local", "share", "openhijack")
-		certMgr := cert.NewCertManager(userDataDir)
-		logf := func(format string, args ...interface{}) { fmt.Printf(format, args...) }
-
-		if !certMgr.HasCA() {
-			logf("CA 证书不存在，开始生成...\n")
-			if err := certMgr.GenerateCA(logf); err != nil {
-				fmt.Fprintf(os.Stderr, "生成 CA 证书失败: %v\n", err)
-				os.Exit(1)
-			}
-		}
-
-		if !certMgr.HasServerCert() {
-			logf("服务器证书不存在，开始生成...\n")
-			if err := certMgr.GenerateServerCert(logf); err != nil {
-				fmt.Fprintf(os.Stderr, "生成服务器证书失败: %v\n", err)
-				os.Exit(1)
-			}
-		}
-
-		if err := cert.InstallCACert(certMgr.CACertFile(), logf); err != nil {
-			fmt.Fprintf(os.Stderr, "安装 CA 证书失败: %v\n", err)
-			os.Exit(1)
-		}
-
-		hostsMgr := hosts.NewHostsManager(userDataDir)
-		if err := hostsMgr.AddEntry(logf); err != nil {
-			fmt.Fprintf(os.Stderr, "修改 hosts 文件失败: %v\n", err)
 			os.Exit(1)
 		}
 

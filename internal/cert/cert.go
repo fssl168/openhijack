@@ -6,11 +6,13 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 )
 
@@ -181,6 +183,38 @@ func (cm *CertManager) GenerateServerCert(logf func(string, ...interface{})) err
 
 func (cm *CertManager) TLSCert() (tlsCertFile, tlsKeyFile string) {
 	return cm.SrvCertFile(), cm.SrvKeyFile()
+}
+
+func (cm *CertManager) RemoveLocalArtifacts(logf func(string, ...interface{})) error {
+	paths := []string{
+		cm.SrvCertFile(),
+		cm.SrvKeyFile(),
+		cm.CACertFile(),
+		cm.CAKeyFile(),
+	}
+
+	var errs []error
+	for _, path := range paths {
+		if err := os.Remove(path); err != nil {
+			if os.IsNotExist(err) {
+				logf("本地文件不存在，跳过移除: %s", path)
+				continue
+			}
+			errs = append(errs, fmt.Errorf("移除 %s 失败: %w", path, err))
+			continue
+		}
+		logf("已移除本地文件: %s", path)
+	}
+
+	if err := os.Remove(cm.CADir()); err != nil {
+		if !os.IsNotExist(err) && !errors.Is(err, syscall.ENOTEMPTY) {
+			errs = append(errs, fmt.Errorf("移除 CA 目录失败: %w", err))
+		}
+	} else {
+		logf("已移除 CA 目录: %s", cm.CADir())
+	}
+
+	return errors.Join(errs...)
 }
 
 func writePEM(path, pemType string, data []byte) error {

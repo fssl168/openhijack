@@ -41,6 +41,14 @@ go build -o openhijack ./cmd/openhijack/
 
 ## 使用
 
+### 第一步：初始化配置
+
+```bash
+./openhijack init
+```
+
+会在默认配置路径生成 `config.toml` 模板，并提示你修改上游配置。
+
 ### 方式一：权限提升模式（推荐）
 
 ```bash
@@ -71,9 +79,21 @@ sudo ./openhijack serve
 ./openhijack paths
 ```
 
+### 清理安装痕迹
+
+```bash
+./openhijack cleanup
+```
+
+会移除 hosts 条目、系统 CA 信任，以及本地生成的证书和 hosts 备份。`uninstall` 是同义命令。
+
 ## 命令行选项
 
 ```
+openhijack init [选项]
+  --config string              配置文件路径
+  --force                      覆盖已存在的配置文件
+
 openhijack serve [选项]
   --host string                监听地址 (默认: 所有接口)
   --port int                   监听端口 (默认: 443)
@@ -83,6 +103,9 @@ openhijack serve [选项]
   --debug                      调试模式 (打印请求头/请求体)
   --disable-ssl-strict-mode    禁用上游 TLS 证书校验
   --force-stream               强制使用流模式
+
+openhijack cleanup
+  移除 hosts、系统 CA 和本地证书文件
 ```
 
 ## 配置文件

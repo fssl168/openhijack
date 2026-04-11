@@ -10,9 +10,9 @@ import (
 )
 
 const (
-	HostsFile     = "/etc/hosts"
-	hostsMarker   = "# Added by OpenHijack"
-	hostsDomain   = "api.openai.com"
+	HostsFile       = "/etc/hosts"
+	hostsMarker     = "# Added by OpenHijack"
+	hostsDomain     = "api.openai.com"
 	hostsBackupName = "hosts.backup"
 )
 
@@ -28,6 +28,19 @@ func NewHostsManager(dataDir string) *HostsManager {
 
 func (hm *HostsManager) BackupPath() string {
 	return filepath.Join(hm.dataDir, hostsBackupName)
+}
+
+func (hm *HostsManager) RemoveBackup(logf func(string, ...interface{})) error {
+	path := hm.BackupPath()
+	if err := os.Remove(path); err != nil {
+		if os.IsNotExist(err) {
+			logf("hosts 备份文件不存在，跳过移除: %s", path)
+			return nil
+		}
+		return fmt.Errorf("移除 hosts 备份失败: %w", err)
+	}
+	logf("已移除 hosts 备份: %s", path)
+	return nil
 }
 
 func (hm *HostsManager) BackupHosts(logf func(string, ...interface{})) error {
