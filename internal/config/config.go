@@ -8,6 +8,8 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+const ProviderOpenAIChatCompletion = "openai_chat_completion"
+
 type ConfigGroup struct {
 	Name                   string `toml:"name"`
 	Provider               string `toml:"provider"`
@@ -47,32 +49,47 @@ func Load(path string) (*Config, error) {
 	}
 
 	for i := range cfg.ConfigGroups {
-		normalizeConfigGroup(&cfg.ConfigGroups[i])
+		if err := normalizeConfigGroup(&cfg.ConfigGroups[i]); err != nil {
+			return nil, fmt.Errorf("校验 config_groups[%d] 失败: %w", i, err)
+		}
 	}
 
 	return &cfg, nil
 }
 
-func normalizeConfigGroup(g *ConfigGroup) {
-	if g.Provider == "" {
-		g.Provider = "openai_chat_completion"
+func normalizeConfigGroup(g *ConfigGroup) error {
+	provider, err := normalizeProvider(g.Provider)
+	if err != nil {
+		return err
 	}
-	g.Provider = normalizeProvider(g.Provider)
+	g.Provider = provider
 	g.MiddleRoute = strings.TrimRight(g.MiddleRoute, "/")
+	return validateConfigGroup(g)
 }
 
-func normalizeProvider(provider string) string {
+func normalizeProvider(provider string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "openai_chat_completion", "openai":
-		return "openai_chat_completion"
+	case "", ProviderOpenAIChatCompletion, "openai":
+		return ProviderOpenAIChatCompletion, nil
 	case "openai_response":
-		return "openai_response"
+		return "openai_response", nil
 	case "anthropic":
-		return "anthropic"
+		return "anthropic", nil
 	case "gemini":
-		return "gemini"
+		return "gemini", nil
 	default:
-		return "openai_chat_completion"
+		return "", fmt.Errorf("不支持的 provider: %q", provider)
+	}
+}
+
+func validateConfigGroup(g *ConfigGroup) error {
+	switch g.Provider {
+	case ProviderOpenAIChatCompletion:
+		return nil
+	case "openai_response", "anthropic", "gemini":
+		return fmt.Errorf("provider %q 尚未实现，目前仅支持 %q", g.Provider, ProviderOpenAIChatCompletion)
+	default:
+		return fmt.Errorf("不支持的 provider: %q", g.Provider)
 	}
 }
 

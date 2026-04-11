@@ -31,6 +31,8 @@ type ProxyServer struct {
 	cleanupFn   func()
 }
 
+const openAIDefaultRoutePrefix = "/v1"
+
 type ServeOptions struct {
 	ConfigPath       string
 	Host             string
@@ -88,6 +90,10 @@ func (s *ProxyServer) logRequest(requestID, message string) {
 	s.logger.Printf("%s [%s] %s", s.timestampMs(), requestID, message)
 }
 
+func buildDefaultOpenAIRoute(suffix string) string {
+	return openAIDefaultRoutePrefix + "/" + strings.TrimPrefix(suffix, "/")
+}
+
 func (s *ProxyServer) buildModelsRoute() string {
 	return s.buildRoute("models")
 }
@@ -104,18 +110,38 @@ func (s *ProxyServer) buildRoute(suffix string) string {
 	return strings.TrimRight(middle, "/") + "/" + strings.TrimPrefix(suffix, "/")
 }
 
+func (s *ProxyServer) routeVariants(suffix string) []string {
+	candidates := []string{
+		s.buildRoute(suffix),
+		buildDefaultOpenAIRoute(suffix),
+	}
+	seen := make(map[string]struct{}, len(candidates))
+	routes := make([]string, 0, len(candidates))
+	for _, route := range candidates {
+		if _, exists := seen[route]; exists {
+			continue
+		}
+		seen[route] = struct{}{}
+		routes = append(routes, route)
+	}
+	return routes
+}
+
+func (s *ProxyServer) authorizeRequest(w http.ResponseWriter, r *http.Request, requestID string, logScope string) bool {
+	if s.auth.Verify(r.Header.Get("Authorization")) {
+		return true
+	}
+
+	s.logRequest(requestID, logScope+"鉴权失败")
+	WriteAuthenticationError(w)
+	return false
+}
+
 func (s *ProxyServer) handleModels(w http.ResponseWriter, r *http.Request) {
 	requestID := s.newRequestID()
-	s.logRequest(requestID, fmt.Sprintf("收到模型列表请求 %s", s.buildModelsRoute()))
+	s.logRequest(requestID, fmt.Sprintf("收到模型列表请求 %s", r.URL.Path))
 
-	if !s.auth.Verify(r.Header.Get("Authorization")) {
-		s.logRequest(requestID, "模型列表请求鉴权失败")
-		WriteJSON(w, http.StatusUnauthorized, map[string]interface{}{
-			"error": map[string]interface{}{
-				"message": "Invalid authentication",
-				"type":    "authentication_error",
-			},
-		})
+	if !s.authorizeRequest(w, r, requestID, "模型列表请求") {
 		return
 	}
 
@@ -129,9 +155,9 @@ func (s *ProxyServer) handleModels(w http.ResponseWriter, r *http.Request) {
 				"created":  time.Now().Unix(),
 				"permission": []interface{}{
 					map[string]interface{}{
-						"id":                  fmt.Sprintf("modelperm-%s", s.config.MappedModelID),
-						"object":              "model_permission",
-						"created":             time.Now().Unix(),
+						"id":                   fmt.Sprintf("modelperm-%s", s.config.MappedModelID),
+						"object":               "model_permission",
+						"created":              time.Now().Unix(),
 						"allow_create_engine":  false,
 						"allow_sampling":       true,
 						"allow_logprobs":       true,
@@ -194,14 +220,7 @@ func (s *ProxyServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		s.logRequest(requestID, fmt.Sprintf("--- 请求体 (调试模式) ---\n%s\n---", string(body)))
 	}
 
-	if !s.auth.Verify(r.Header.Get("Authorization")) {
-		s.logRequest(requestID, "Chat Completions 请求鉴权失败")
-		WriteJSON(w, http.StatusUnauthorized, map[string]interface{}{
-			"error": map[string]interface{}{
-				"message": "Invalid authentication",
-				"type":    "authentication_error",
-			},
-		})
+	if !s.authorizeRequest(w, r, requestID, "Chat Completions 请求") {
 		return
 	}
 
@@ -213,15 +232,10 @@ func (s *ProxyServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 
 	isStream := clientRequestedStream
 
-	upstreamResp, err := s.transport.ForwardChatCompletions(requestID, body, isStream)
+	upstreamResp, err := s.transport.ForwardChatCompletions(r.Context(), requestID, body, isStream)
 	if err != nil {
 		s.logRequest(requestID, fmt.Sprintf("上游请求失败: %v", err))
-		WriteJSON(w, http.StatusBadGateway, map[string]interface{}{
-			"error": map[string]interface{}{
-				"message": fmt.Sprintf("Upstream request failed: %v", err),
-				"type":    "upstream_error",
-			},
-		})
+		WriteOpenAIError(w, http.StatusBadGateway, fmt.Sprintf("Upstream request failed: %v", err), "upstream_error")
 		return
 	}
 
@@ -230,8 +244,8 @@ func (s *ProxyServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	if upstreamResp.StatusCode != http.StatusOK {
 		respBody, _ := ReadBody(upstreamResp)
 		s.logRequest(requestID, fmt.Sprintf("上游错误响应: %s", string(respBody)))
-		w.WriteHeader(upstreamResp.StatusCode)
 		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(upstreamResp.StatusCode)
 		w.Write(respBody)
 		return
 	}
@@ -286,6 +300,10 @@ func (s *ProxyServer) handleOther(w http.ResponseWriter, r *http.Request) {
 	requestID := s.newRequestID()
 	s.logRequest(requestID, fmt.Sprintf("透传请求: %s %s", r.Method, r.URL.Path))
 
+	if !s.authorizeRequest(w, r, requestID, "透传请求") {
+		return
+	}
+
 	upstreamURL := s.config.CurrentGroup().TargetAPIBaseURL() + r.URL.Path
 	if r.URL.RawQuery != "" {
 		upstreamURL += "?" + r.URL.RawQuery
@@ -304,7 +322,7 @@ func (s *ProxyServer) handleOther(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for k, v := range r.Header {
-		if strings.EqualFold(k, "host") || strings.EqualFold(k, "content-length") {
+		if strings.EqualFold(k, "host") || strings.EqualFold(k, "content-length") || strings.EqualFold(k, "authorization") {
 			continue
 		}
 		req.Header[k] = v
@@ -344,22 +362,29 @@ func (s *ProxyServer) handleOther(w http.ResponseWriter, r *http.Request) {
 func (s *ProxyServer) setupRoutes() http.Handler {
 	mux := http.NewServeMux()
 
-	modelsRoute := s.buildModelsRoute()
-	chatRoute := s.buildChatCompletionsRoute()
+	modelsRoutes := s.routeVariants("models")
+	chatRoutes := s.routeVariants("chat/completions")
 
-	s.logger.Printf("注册路由: GET %s, POST %s", modelsRoute, chatRoute)
+	s.logger.Printf("注册模型路由: GET %s", strings.Join(modelsRoutes, ", "))
+	s.logger.Printf("注册对话路由: POST %s", strings.Join(chatRoutes, ", "))
 
-	mux.HandleFunc(modelsRoute, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet {
-			s.handleModels(w, r)
-			return
-		}
-		http.NotFound(w, r)
-	})
+	for _, route := range modelsRoutes {
+		route := route
+		mux.HandleFunc(route, func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				s.handleModels(w, r)
+				return
+			}
+			http.NotFound(w, r)
+		})
+	}
 
-	mux.HandleFunc(chatRoute, func(w http.ResponseWriter, r *http.Request) {
-		s.handleChatCompletions(w, r)
-	})
+	for _, route := range chatRoutes {
+		route := route
+		mux.HandleFunc(route, func(w http.ResponseWriter, r *http.Request) {
+			s.handleChatCompletions(w, r)
+		})
+	}
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		s.handleOther(w, r)

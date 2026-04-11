@@ -30,7 +30,7 @@ func main() {
 	host := serveCmd.String("host", defaultListenHost, "监听地址")
 	port := serveCmd.Int("port", defaultListenPort, "监听端口")
 	debug := serveCmd.Bool("debug", false, "调试模式")
-	disableSSLStrict := serveCmd.Bool("disable-ssl-strict-mode", false, "禁用 SSL 严格模式")
+	disableSSLStrict := serveCmd.Bool("disable-ssl-strict-mode", false, "禁用上游 TLS 证书校验")
 	forceStream := serveCmd.Bool("force-stream", false, "强制使用流模式")
 	httpMode := serveCmd.Bool("http", false, "使用纯 HTTP 模式 (不使用 TLS)")
 	noManage := serveCmd.Bool("no-manage", false, "不自动管理证书和 hosts (手动指定证书时使用)")
@@ -73,26 +73,42 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  --debug                      调试模式\n")
 	fmt.Fprintf(os.Stderr, "  --http                       使用纯 HTTP 模式 (不使用 TLS)\n")
 	fmt.Fprintf(os.Stderr, "  --no-manage                  不自动管理证书和 hosts\n")
-	fmt.Fprintf(os.Stderr, "  --disable-ssl-strict-mode    禁用 SSL 严格模式\n")
+	fmt.Fprintf(os.Stderr, "  --disable-ssl-strict-mode    禁用上游 TLS 证书校验\n")
 	fmt.Fprintf(os.Stderr, "  --force-stream               强制使用流模式\n")
 }
 
-func getConfigDir() string {
-	home, err := os.UserHomeDir()
+func runtimeHomeDir() string {
+	home, err := resolveHomeDir(os.Geteuid(), os.Getenv("SUDO_USER"), resolveUserHome, os.UserHomeDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "无法获取用户主目录: %v\n", err)
 		os.Exit(1)
 	}
-	return filepath.Join(home, ".config", "openhijack")
+	return home
+}
+
+func resolveHomeDir(euid int, sudoUser string, lookupHome func(string) string, userHomeDir func() (string, error)) (string, error) {
+	if euid == 0 && sudoUser != "" {
+		if home := lookupHome(sudoUser); home != "" {
+			return home, nil
+		}
+	}
+
+	home, err := userHomeDir()
+	if err != nil {
+		return "", err
+	}
+	if home == "" {
+		return "", fmt.Errorf("用户主目录为空")
+	}
+	return home, nil
+}
+
+func getConfigDir() string {
+	return filepath.Join(runtimeHomeDir(), ".config", "openhijack")
 }
 
 func getDataDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "无法获取用户主目录: %v\n", err)
-		os.Exit(1)
-	}
-	return filepath.Join(home, ".local", "share", "openhijack")
+	return filepath.Join(runtimeHomeDir(), ".local", "share", "openhijack")
 }
 
 func resolveConfigPath(configPath string) string {
@@ -285,17 +301,20 @@ func runElevate() {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = os.Environ()
-	cmd.Run()
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "sudo 执行失败: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func resolveScriptUser() string {
 	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
 		return sudoUser
 	}
-	if currentUser, err := user.Current(); err == nil {
+	if currentUser, err := user.Current(); err == nil && currentUser.Username != "" {
 		return currentUser.Username
 	}
-	return "snemc"
+	return "root"
 }
 
 func resolveUserHome(username string) string {

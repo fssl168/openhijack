@@ -36,13 +36,13 @@ func NewUpstreamTransport(cfg *config.Config, debugMode bool, disableSSLStrict b
 		}).DialContext,
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:  10 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
 
 	if disableSSLStrict {
 		transport.TLSClientConfig = &tls.Config{
-			InsecureSkipVerify: false,
+			InsecureSkipVerify: true,
 			MinVersion:         tls.VersionTLS12,
 		}
 	}
@@ -66,7 +66,11 @@ func (t *UpstreamTransport) buildUpstreamURL() string {
 	return t.group.FullAPIURL("chat/completions")
 }
 
-func (t *UpstreamTransport) ForwardChatCompletions(requestID string, body []byte, isStream bool) (*http.Response, error) {
+func (t *UpstreamTransport) ForwardChatCompletions(ctx context.Context, requestID string, body []byte, isStream bool) (*http.Response, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	var reqData map[string]interface{}
 	if err := json.Unmarshal(body, &reqData); err != nil {
 		return nil, fmt.Errorf("解析请求 JSON 失败: %w", err)
@@ -94,7 +98,7 @@ func (t *UpstreamTransport) ForwardChatCompletions(requestID string, body []byte
 	upstreamURL := t.buildUpstreamURL()
 	t.logger.Printf("[%s] 转发到上游: %s (model=%s, stream=%v)", requestID, upstreamURL, targetModel, isStream)
 
-	req, err := http.NewRequestWithContext(context.Background(), "POST", upstreamURL, bytes.NewReader(modifiedBody))
+	req, err := http.NewRequestWithContext(ctx, "POST", upstreamURL, bytes.NewReader(modifiedBody))
 	if err != nil {
 		return nil, fmt.Errorf("创建上游请求失败: %w", err)
 	}

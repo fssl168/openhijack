@@ -55,6 +55,8 @@ go build -o openhijack ./cmd/openhijack/
 sudo ./openhijack serve
 ```
 
+如果使用自定义配置路径，也可以显式传 `--config`，或者在 `sudo` 时保留 `OPENHIJACK_CONFIG`。
+
 ### 方式三：纯 HTTP 测试
 
 ```bash
@@ -79,7 +81,7 @@ openhijack serve [选项]
   --http                       使用纯 HTTP 模式 (不使用 TLS)
   --no-manage                  不自动管理证书和 hosts
   --debug                      调试模式 (打印请求头/请求体)
-  --disable-ssl-strict-mode    禁用 SSL 严格模式
+  --disable-ssl-strict-mode    禁用上游 TLS 证书校验
   --force-stream               强制使用流模式
 ```
 
@@ -112,6 +114,8 @@ middle_route = "/v1"
 ```
 
 通过 `current_config_index` 指定当前使用哪个配置组（从 0 开始）。支持配置多个上游，按需切换。
+
+目前仅实现 `openai_chat_completion`（或别名 `openai`）。`openai_response`、`anthropic`、`gemini` 暂未实现，配置时会直接报错。
 
 | 字段 | 说明 |
 |------|------|

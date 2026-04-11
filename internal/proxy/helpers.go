@@ -13,6 +13,19 @@ func WriteJSON(w http.ResponseWriter, status int, data interface{}) {
 	json.NewEncoder(w).Encode(data)
 }
 
+func WriteOpenAIError(w http.ResponseWriter, status int, message string, errorType string) {
+	WriteJSON(w, status, map[string]interface{}{
+		"error": map[string]interface{}{
+			"message": message,
+			"type":    errorType,
+		},
+	})
+}
+
+func WriteAuthenticationError(w http.ResponseWriter) {
+	WriteOpenAIError(w, http.StatusUnauthorized, "Invalid authentication", "authentication_error")
+}
+
 func ReadRequestBody(r *http.Request) ([]byte, error) {
 	defer r.Body.Close()
 	return io.ReadAll(r.Body)
