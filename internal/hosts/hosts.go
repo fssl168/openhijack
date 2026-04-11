@@ -7,16 +7,21 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"openhijack/internal/platform"
 )
 
 const (
-	HostsFile       = "/etc/hosts"
 	hostsMarker     = "# Added by OpenHijack"
-	hostsDomain     = "api.openai.com"
 	hostsBackupName = "hosts.backup"
 )
 
 var hostsIPs = []string{"127.0.0.1", "::1"}
+var hostsDomains = []string{"api.openai.com", "openrouter.ai"}
+
+func getHostsFilePath() string {
+	return platform.GetHostsPath()
+}
 
 type HostsManager struct {
 	dataDir string
@@ -44,7 +49,8 @@ func (hm *HostsManager) RemoveBackup(logf func(string, ...interface{})) error {
 }
 
 func (hm *HostsManager) BackupHosts(logf func(string, ...interface{})) error {
-	src, err := os.ReadFile(HostsFile)
+	hostsFile := getHostsFilePath()
+	src, err := os.ReadFile(hostsFile)
 	if err != nil {
 		return fmt.Errorf("读取 hosts 文件失败: %w", err)
 	}
@@ -63,7 +69,8 @@ func (hm *HostsManager) AddEntry(logf func(string, ...interface{})) error {
 		return err
 	}
 
-	content, err := os.ReadFile(HostsFile)
+	hostsFile := getHostsFilePath()
+	content, err := os.ReadFile(hostsFile)
 	if err != nil {
 		return fmt.Errorf("读取 hosts 文件失败: %w", err)
 	}
@@ -80,23 +87,28 @@ func (hm *HostsManager) AddEntry(logf func(string, ...interface{})) error {
 	}
 	buf.WriteString(hostsMarker)
 	buf.WriteByte('\n')
-	for _, ip := range hostsIPs {
-		buf.WriteString(ip)
-		buf.WriteByte(' ')
-		buf.WriteString(hostsDomain)
-		buf.WriteByte('\n')
+
+	for _, domain := range hostsDomains {
+		for _, ip := range hostsIPs {
+			buf.WriteString(ip)
+			buf.WriteByte(' ')
+			buf.WriteString(domain)
+			buf.WriteByte('\n')
+		}
 	}
 
-	if err := os.WriteFile(HostsFile, []byte(buf.String()), 0644); err != nil {
+	if err := os.WriteFile(hostsFile, []byte(buf.String()), 0644); err != nil {
 		return fmt.Errorf("写入 hosts 文件失败: %w", err)
 	}
 
-	logf("已添加 hosts 条目: %s -> %s", strings.Join(hostsIPs, ", "), hostsDomain)
+	domainList := strings.Join(hostsDomains, ", ")
+	logf("已添加 hosts 条目: %s -> [%s]", strings.Join(hostsIPs, ", "), domainList)
 	return nil
 }
 
 func (hm *HostsManager) RemoveEntry(logf func(string, ...interface{})) error {
-	content, err := os.ReadFile(HostsFile)
+	hostsFile := getHostsFilePath()
+	content, err := os.ReadFile(hostsFile)
 	if err != nil {
 		return fmt.Errorf("读取 hosts 文件失败: %w", err)
 	}
@@ -107,7 +119,7 @@ func (hm *HostsManager) RemoveEntry(logf func(string, ...interface{})) error {
 	}
 
 	cleaned := removeHostsBlock(string(content))
-	if err := os.WriteFile(HostsFile, []byte(cleaned), 0644); err != nil {
+	if err := os.WriteFile(hostsFile, []byte(cleaned), 0644); err != nil {
 		return fmt.Errorf("写入 hosts 文件失败: %w", err)
 	}
 
@@ -125,11 +137,23 @@ func (hm *HostsManager) RestoreHosts(logf func(string, ...interface{})) error {
 	if err != nil {
 		return fmt.Errorf("读取 hosts 备份失败: %w", err)
 	}
-	if err := os.WriteFile(HostsFile, data, 0644); err != nil {
+	hostsFile := getHostsFilePath()
+	if err := os.WriteFile(hostsFile, data, 0644); err != nil {
 		return fmt.Errorf("恢复 hosts 文件失败: %w", err)
 	}
 	logf("hosts 文件已从备份恢复")
 	return nil
+}
+
+func isManagedHostEntry(trimmedLine string) bool {
+	for _, domain := range hostsDomains {
+		for _, ip := range hostsIPs {
+			if trimmedLine == ip+" "+domain || trimmedLine == ip+"\t"+domain {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func removeHostsBlock(content string) string {
@@ -143,15 +167,7 @@ func removeHostsBlock(content string) string {
 			continue
 		}
 		if skip {
-			trimmed := strings.TrimSpace(line)
-			isEntry := false
-			for _, ip := range hostsIPs {
-				if trimmed == ip+" "+hostsDomain || trimmed == ip+"\t"+hostsDomain {
-					isEntry = true
-					break
-				}
-			}
-			if isEntry {
+			if isManagedHostEntry(strings.TrimSpace(line)) {
 				continue
 			}
 			skip = false

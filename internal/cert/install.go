@@ -1,11 +1,13 @@
 package cert
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 const caCertFileName = "openhijack-ca.crt"
@@ -18,6 +20,8 @@ func InstallCACert(caCertPath string, logf func(string, ...interface{})) error {
 		return installCADarwin(caCertPath, logf)
 	case "windows":
 		return installCAWindows(caCertPath, logf)
+	case "freebsd":
+		return installCAFreeBSD(caCertPath, logf)
 	default:
 		return fmt.Errorf("不支持的操作系统: %s", runtime.GOOS)
 	}
@@ -31,6 +35,8 @@ func RemoveCACert(logf func(string, ...interface{})) {
 		removeCADarwin(logf)
 	case "windows":
 		removeCAWindows(logf)
+	case "freebsd":
+		removeCAFreeBSD(logf)
 	default:
 		logf("不支持的操作系统: %s", runtime.GOOS)
 	}
@@ -60,7 +66,7 @@ func installCALinux(caCertPath string, logf func(string, ...interface{})) error 
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("trust extract-compat 失败: %w", err)
 		}
-		logf("CA 证书安装成功 (p11-kit/trust)")
+		logf("CA 证书安装成功 (Arch Linux / Fedora - p11-kit/trust)")
 		return nil
 	}
 
@@ -82,7 +88,7 @@ func installCALinux(caCertPath string, logf func(string, ...interface{})) error 
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("update-ca-trust extract 失败: %w", err)
 		}
-		logf("CA 证书安装成功 (ca-trust)")
+		logf("CA 证书安装成功 (RHEL / CentOS / openSUSE - ca-trust)")
 		return nil
 	}
 
@@ -104,11 +110,40 @@ func installCALinux(caCertPath string, logf func(string, ...interface{})) error 
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("update-ca-certificates 失败: %w", err)
 		}
-		logf("CA 证书安装成功 (Debian/Ubuntu)")
+		logf("CA 证书安装成功 (Debian / Ubuntu / Alpine Linux)")
 		return nil
 	}
 
-	return fmt.Errorf("未找到可用的 CA 证书管理工具 (trust/update-ca-trust/update-ca-certificates)，请手动安装 CA 证书")
+	return buildLinuxInstallError()
+}
+
+func buildLinuxInstallError() error {
+	var hint strings.Builder
+
+	hint.WriteString("未找到可用的 CA 证书管理工具。\n\n")
+	hint.WriteString("请根据你的发行版安装相应的包：\n\n")
+
+	hint.WriteString("Debian / Ubuntu:\n")
+	hint.WriteString("  sudo apt-get install ca-certificates\n\n")
+
+	hint.WriteString("RHEL / CentOS / Fedora:\n")
+	hint.WriteString("  sudo yum install ca-certificates\n")
+	hint.WriteString("  # 或\n")
+	hint.WriteString("  sudo dnf install ca-certificates\n\n")
+
+	hint.WriteString("Arch Linux:\n")
+	hint.WriteString("  sudo pacman -S trust\n\n")
+
+	hint.WriteString("openSUSE:\n")
+	hint.WriteString("  sudo zypper install ca-certificates\n\n")
+
+	hint.WriteString("Alpine Linux:\n")
+	hint.WriteString("  sudo apk add ca-certificates\n")
+	hint.WriteString("  update-ca-certificates\n\n")
+
+	hint.WriteString("或者手动将 CA 证书添加到系统信任库。\n")
+
+	return errors.New(hint.String())
 }
 
 func removeCALinux(logf func(string, ...interface{})) {
@@ -202,4 +237,49 @@ func removeCAWindows(logf func(string, ...interface{})) {
 		logf("从 Windows 根证书存储移除失败 (可能已不存在): %v", err)
 	}
 	logf("CA 证书已从 Windows 系统移除")
+}
+
+func installCAFreeBSD(caCertPath string, logf func(string, ...interface{})) error {
+	src, err := os.ReadFile(caCertPath)
+	if err != nil {
+		return fmt.Errorf("读取 CA 证书失败: %w", err)
+	}
+
+	dstDir := "/usr/local/share/certs/"
+	if err := os.MkdirAll(dstDir, 0755); err != nil {
+		return fmt.Errorf("创建 CA 目录失败: %w", err)
+	}
+	dst := filepath.Join(dstDir, caCertFileName)
+	if err := os.WriteFile(dst, src, 0644); err != nil {
+		return fmt.Errorf("复制 CA 证书到 %s 失败: %w", dst, err)
+	}
+	logf("CA 证书已复制到 %s", dst)
+
+	logf("运行 certctl rehash...")
+	cmd := exec.Command("certctl", "rehash")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("certctl rehash 失败: %w", err)
+	}
+	logf("CA 证书安装成功 (FreeBSD)")
+	return nil
+}
+
+func removeCAFreeBSD(logf func(string, ...interface{})) {
+	path := "/usr/local/share/certs/" + caCertFileName
+	if _, err := os.Stat(path); err == nil {
+		if err := os.Remove(path); err != nil {
+			logf("移除 %s 失败: %v", path, err)
+		} else {
+			logf("已移除 %s", path)
+		}
+	}
+
+	cmd := exec.Command("certctl", "rehash")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Run()
+
+	logf("CA 证书已从 FreeBSD 系统移除")
 }

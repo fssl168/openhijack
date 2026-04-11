@@ -8,13 +8,13 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"os/user"
 	"path/filepath"
 	"syscall"
 
 	"openhijack/internal/cert"
 	"openhijack/internal/hosts"
+	"openhijack/internal/platform"
 	"openhijack/internal/proxy"
 )
 
@@ -132,7 +132,8 @@ func createDefaultConfig(configPath string, force bool) (bool, error) {
 		}
 	}
 
-	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
+	dir := filepath.Dir(configPath)
+	if err := platform.EnsureDir(dir, 0700); err != nil {
 		return false, fmt.Errorf("创建配置目录失败: %w", err)
 	}
 
@@ -170,7 +171,15 @@ func runInit(configPath string, force bool) {
 }
 
 func runtimeHomeDir() string {
-	home, err := resolveHomeDir(os.Geteuid(), os.Getenv("SUDO_USER"), resolveUserHome, os.UserHomeDir)
+	var euid int
+	if platform.IsPrivileged() {
+		euid = 0
+	} else {
+		euid = -1
+	}
+
+	sudoUser := os.Getenv("SUDO_USER")
+	home, err := platform.ResolveHomeDir(euid, sudoUser)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "无法获取用户主目录: %v\n", err)
 		os.Exit(1)
@@ -178,29 +187,22 @@ func runtimeHomeDir() string {
 	return home
 }
 
-func resolveHomeDir(euid int, sudoUser string, lookupHome func(string) string, userHomeDir func() (string, error)) (string, error) {
-	if euid == 0 && sudoUser != "" {
-		if home := lookupHome(sudoUser); home != "" {
-			return home, nil
-		}
-	}
-
-	home, err := userHomeDir()
-	if err != nil {
-		return "", err
-	}
-	if home == "" {
-		return "", fmt.Errorf("用户主目录为空")
-	}
-	return home, nil
-}
-
 func getConfigDir() string {
-	return filepath.Join(runtimeHomeDir(), ".config", "openhijack")
+	configDir, err := platform.GetConfigDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "无法获取配置目录: %v\n", err)
+		os.Exit(1)
+	}
+	return configDir
 }
 
 func getDataDir() string {
-	return filepath.Join(runtimeHomeDir(), ".local", "share", "openhijack")
+	dataDir, err := platform.GetDataDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "无法获取数据目录: %v\n", err)
+		os.Exit(1)
+	}
+	return dataDir
 }
 
 func resolveConfigPath(configPath string) string {
@@ -335,23 +337,12 @@ func cleanupInstallation(dataDir string, logf func(string, ...interface{})) erro
 }
 
 func runCleanup() {
-	if os.Geteuid() != 0 {
-		selfPath, err := os.Executable()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "无法获取可执行文件路径: %v\n", err)
-			os.Exit(1)
-		}
-
-		args := []string{"--preserve-env=OPENHIJACK_CONFIG", selfPath, "cleanup"}
+	if !platform.IsPrivileged() {
+		args := []string{"cleanup"}
 		args = append(args, os.Args[2:]...)
 
-		cmd := exec.Command("sudo", args...)
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		cmd.Env = os.Environ()
-		if err := cmd.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "sudo 执行失败: %v\n", err)
+		if err := platform.Elevate(args, os.Environ()); err != nil {
+			fmt.Fprintf(os.Stderr, "权限提升失败: %v\n", err)
 			os.Exit(1)
 		}
 		return
@@ -365,25 +356,35 @@ func runCleanup() {
 }
 
 func runElevate() {
-	if os.Geteuid() == 0 {
-		scriptUser := resolveScriptUser()
-		userHome := resolveUserHome(scriptUser)
+	if platform.IsPrivileged() {
+		configSrc := envOrDefault("OPENHIJACK_CONFIG", "")
 
-		configSrcDefault := filepath.Join(userHome, ".config", "openhijack", "config.toml")
-		configSrc := envOrDefault("OPENHIJACK_CONFIG", configSrcDefault)
+		if configSrc == "" {
+			configDir, err := platform.GetConfigDir()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "无法获取配置目录: %v\n", err)
+				os.Exit(1)
+			}
+			configSrc = filepath.Join(configDir, "config.toml")
+		}
 
 		if _, err := os.Stat(configSrc); os.IsNotExist(err) {
 			fmt.Fprintf(os.Stderr, "配置文件不存在: %s\n请先运行 `openhijack init` 生成模板并修改上游配置。\n", configSrc)
 			os.Exit(1)
 		}
 
-		rootConfigDir := "/root/.config/openhijack"
-		if err := os.MkdirAll(rootConfigDir, 0700); err != nil {
+		adminConfigDir, err := platform.GetConfigDir()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "无法获取管理员配置目录: %v\n", err)
+			os.Exit(1)
+		}
+
+		if err := platform.EnsureDir(adminConfigDir, 0700); err != nil {
 			fmt.Fprintf(os.Stderr, "创建配置目录失败: %v\n", err)
 			os.Exit(1)
 		}
 
-		rootConfigFile := filepath.Join(rootConfigDir, "config.toml")
+		rootConfigFile := filepath.Join(adminConfigDir, "config.toml")
 		srcData, err := os.ReadFile(configSrc)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "读取配置文件失败: %v\n", err)
@@ -394,38 +395,56 @@ func runElevate() {
 			os.Exit(1)
 		}
 
-		args := []string{"serve", "--config", rootConfigFile}
-		args = append(args, os.Args[2:]...)
+		host := defaultListenHost
+		port := defaultListenPort
+		debug := false
+		disableSSLStrict := false
+		forceStream := false
+		useTLS := true
+		noManage := false
 
-		bin, err := exec.LookPath("openhijack")
-		if err != nil {
-			self, _ := os.Executable()
-			bin = self
+		extraArgs := os.Args[2:]
+		for i := 0; i < len(extraArgs); i++ {
+			switch extraArgs[i] {
+			case "--host":
+				if i+1 < len(extraArgs) {
+					host = extraArgs[i+1]
+					i++
+				}
+			case "--port":
+				if i+1 < len(extraArgs) {
+					fmt.Sscanf(extraArgs[i+1], "%d", &port)
+					i++
+				}
+			case "--debug":
+				debug = true
+			case "--disable-ssl-strict-mode":
+				disableSSLStrict = true
+			case "--force-stream":
+				forceStream = true
+			case "--http":
+				useTLS = false
+			case "--no-manage":
+				noManage = true
+			}
 		}
 
-		env := os.Environ()
-		env = append(env, fmt.Sprintf("OPENHIJACK_CONFIG=%s", configSrc))
-
-		syscall.Exec(bin, append([]string{"openhijack"}, args...), env)
+		runServe(rootConfigFile, host, port, debug, disableSSLStrict, forceStream, useTLS, noManage)
 		return
 	}
 
-	selfPath, err := os.Executable()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "无法获取可执行文件路径: %v\n", err)
-		os.Exit(1)
-	}
-
-	args := []string{"--preserve-env=OPENHIJACK_CONFIG", selfPath, "elevate"}
+	args := []string{"elevate"}
 	args = append(args, os.Args[2:]...)
 
-	cmd := exec.Command("sudo", args...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Env = os.Environ()
-	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "sudo 执行失败: %v\n", err)
+	env := os.Environ()
+	configDir, err := platform.GetConfigDir()
+	if err == nil {
+		defaultConfigPath := filepath.Join(configDir, "config.toml")
+		env = append(env, fmt.Sprintf("OPENHIJACK_CONFIG=%s", defaultConfigPath))
+	}
+
+	if err := platform.Elevate(args, env); err != nil {
+		fmt.Fprintf(os.Stderr, "权限提升失败: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -438,16 +457,6 @@ func resolveScriptUser() string {
 		return currentUser.Username
 	}
 	return "root"
-}
-
-func resolveUserHome(username string) string {
-	if u, err := user.Lookup(username); err == nil {
-		return u.HomeDir
-	}
-	if home := os.Getenv("HOME"); home != "" {
-		return home
-	}
-	return "/home/" + username
 }
 
 func envOrDefault(key, defaultVal string) string {
@@ -470,5 +479,6 @@ func printPaths() {
 	fmt.Printf("CA 私钥:      %s\n", certMgr.CAKeyFile())
 	fmt.Printf("服务器证书:   %s\n", certMgr.SrvCertFile())
 	fmt.Printf("服务器私钥:   %s\n", certMgr.SrvKeyFile())
+	fmt.Printf("Hosts 文件:   %s\n", platform.GetHostsPath())
 	fmt.Printf("Hosts 备份:   %s\n", hostsMgr.BackupPath())
 }
