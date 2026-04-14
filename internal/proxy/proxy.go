@@ -58,6 +58,13 @@ func NewProxyServer(opts ServeOptions) (*ProxyServer, error) {
 
 	group := cfg.CurrentGroup()
 	logger.Printf("上游配置: provider=%s, api_url=%s, model_id=%s", group.Provider, group.APIURL, group.ModelID)
+	if len(group.Headers) > 0 {
+		for k, v := range group.Headers {
+			logger.Printf("自定义请求头: %s: %s", k, v)
+		}
+	} else {
+		logger.Printf("自定义请求头: 无")
+	}
 
 	auth := NewProxyAuth(cfg.AuthKey)
 	transport := NewUpstreamTransport(cfg, opts.DebugMode, opts.DisableSSLStrict, logger)
@@ -330,6 +337,10 @@ func (s *ProxyServer) handleOther(w http.ResponseWriter, r *http.Request) {
 
 	if s.config.CurrentGroup().APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+s.config.CurrentGroup().APIKey)
+	}
+
+	for key, value := range s.config.CurrentGroup().Headers {
+		req.Header.Set(key, value)
 	}
 
 	resp, err := s.transport.client.Do(req)

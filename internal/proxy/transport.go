@@ -108,6 +108,11 @@ func (t *UpstreamTransport) ForwardChatCompletions(ctx context.Context, requestI
 		req.Header.Set("Authorization", "Bearer "+t.group.APIKey)
 	}
 
+	for key, value := range t.group.Headers {
+		req.Header.Set(key, value)
+		t.logger.Printf("[%s] 应用自定义请求头: %s: %s", requestID, key, value)
+	}
+
 	if isStream {
 		req.Header.Set("Accept", "text/event-stream")
 	}

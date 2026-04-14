@@ -71,3 +71,64 @@ api_url = "https://example.com"
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
 	}
 }
+
+func TestHeadersConfigLoaded(t *testing.T) {
+	path := writeProxyConfig(t, `
+mapped_model_id = "mapped-model"
+
+[[config_groups]]
+name = "test-with-headers"
+provider = "openai_chat_completion"
+api_url = "https://example.com"
+model_id = "gpt-4"
+
+[config_groups.headers]
+Authorization = "Bearer ak-Tpi51poca5pRPOBEP9jgOj"
+Content-Type = "application/json"
+X-Custom-Header = "custom-value"
+`)
+
+	server, err := NewProxyServer(ServeOptions{ConfigPath: path})
+	if err != nil {
+		t.Fatalf("new proxy server: %v", err)
+	}
+
+	group := server.config.CurrentGroup()
+	if len(group.Headers) == 0 {
+		t.Fatal("expected headers to be loaded, but got empty")
+	}
+
+	if got := group.Headers["Authorization"]; got != "Bearer ak-Tpi51poca5pRPOBEP9jgOj" {
+		t.Fatalf("Authorization header = %q, want %q", got, "Bearer ak-Tpi51poca5pRPOBEP9jgOj")
+	}
+	if got := group.Headers["Content-Type"]; got != "application/json" {
+		t.Fatalf("Content-Type header = %q, want %q", got, "application/json")
+	}
+	if got := group.Headers["X-Custom-Header"]; got != "custom-value" {
+		t.Fatalf("X-Custom-Header = %q, want %q", got, "custom-value")
+	}
+}
+
+func TestHeadersEmptyWhenNotConfigured(t *testing.T) {
+	path := writeProxyConfig(t, `
+mapped_model_id = "mapped-model"
+
+[[config_groups]]
+name = "test-no-headers"
+provider = "openai_chat_completion"
+api_url = "https://example.com"
+`)
+
+	server, err := NewProxyServer(ServeOptions{ConfigPath: path})
+	if err != nil {
+		t.Fatalf("new proxy server: %v", err)
+	}
+
+	group := server.config.CurrentGroup()
+	if group.Headers == nil {
+		t.Skip("headers map is nil when not configured (acceptable)")
+	}
+	if len(group.Headers) != 0 {
+		t.Fatalf("expected no headers, got %d", len(group.Headers))
+	}
+}

@@ -11,14 +11,15 @@ import (
 const ProviderOpenAIChatCompletion = "openai_chat_completion"
 
 type ConfigGroup struct {
-	Name                   string `toml:"name"`
-	Provider               string `toml:"provider"`
-	APIURL                 string `toml:"api_url"`
-	ModelID                string `toml:"model_id"`
-	APIKey                 string `toml:"api_key"`
-	MiddleRoute            string `toml:"middle_route"`
-	ModelDiscoveryStrategy string `toml:"model_discovery_strategy"`
-	PromptCacheEnabled     bool   `toml:"prompt_cache_enabled"`
+	Name                   string            `toml:"name"`
+	Provider               string            `toml:"provider"`
+	APIURL                 string            `toml:"api_url"`
+	ModelID                string            `toml:"model_id"`
+	APIKey                 string            `toml:"api_key"`
+	MiddleRoute            string            `toml:"middle_route"`
+	ModelDiscoveryStrategy string            `toml:"model_discovery_strategy"`
+	PromptCacheEnabled     bool              `toml:"prompt_cache_enabled"`
+	Headers                map[string]string `toml:"headers"`
 }
 
 type Config struct {
