@@ -15,6 +15,10 @@ export const useProxyStore = defineStore('proxy', {
     maxLogs: 500 as number,
     _pollingTimer: null as ReturnType<typeof setInterval> | null,
     _pollingActive: false as boolean,
+    _starting: false as boolean,
+    _startedAt: 0 as number,
+    _consecutiveDownCount: 0 as number,
+    _gracePeriodMs: 5000 as number,
   }),
 
   getters: {
@@ -97,6 +101,9 @@ export const useProxyStore = defineStore('proxy', {
         this.currentConfig = configPath
         this.port = port
         this.uptime = '刚刚启动'
+        this._starting = true
+        this._startedAt = Date.now()
+        this._consecutiveDownCount = 0
         return null
       } catch (e: any) {
         return e?.message || '启动失败'
@@ -109,6 +116,8 @@ export const useProxyStore = defineStore('proxy', {
         if (err) return err
         this.running = false
         this.uptime = ''
+        this._starting = false
+        this._consecutiveDownCount = 0
         return null
       } catch (e: any) {
         return e?.message || '停止失败'
@@ -119,7 +128,25 @@ export const useProxyStore = defineStore('proxy', {
       try {
         const status = await GetStatusApi() as StatusInfoType
         if (!status) return null
-        this.running = status.running
+
+        if (status.running) {
+          this.running = true
+          this._starting = false
+          this._consecutiveDownCount = 0
+        } else {
+          if (this._starting) {
+            const elapsed = Date.now() - this._startedAt
+            if (elapsed < this._gracePeriodMs) {
+              this._consecutiveDownCount++
+              if (this._consecutiveDownCount < 3) {
+                return status
+              }
+            }
+          }
+          this.running = false
+          this._starting = false
+        }
+
         this.port = status.port
         this.host = status.host
         this.currentConfig = status.config
