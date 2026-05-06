@@ -64,10 +64,10 @@ const navItems = [
     </header>
 
     <main class="flex-1 overflow-hidden">
-      <Dashboard v-if="uiStore.currentView === 'dashboard'" />
-      <ConfigManager v-else-if="uiStore.currentView === 'configs'" />
-      <LogViewer v-else-if="uiStore.currentView === 'logs'" />
-      <Settings v-else-if="uiStore.currentView === 'settings'" />
+      <Dashboard v-show="uiStore.currentView === 'dashboard'" />
+      <ConfigManager v-show="uiStore.currentView === 'configs'" />
+      <LogViewer v-show="uiStore.currentView === 'logs'" />
+      <Settings v-show="uiStore.currentView === 'settings'" />
     </main>
 
     <div class="fixed bottom-4 right-4 flex flex-col gap-2 z-50">
