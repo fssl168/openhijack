@@ -50,7 +50,11 @@ async function handleInstallCert() {
   try {
     const err = await InstallCACert()
     if (err) {
-      uiStore.showNotification(`安装失败: ${err}`, 'error')
+      if (err.includes('root') || err.includes('sudo') || err.includes('权限')) {
+        uiStore.showNotification(err.replace(/\n/g, '  |  '), 'warn', 10000)
+      } else {
+        uiStore.showNotification(`安装失败: ${err}`, 'error')
+      }
     } else {
       uiStore.showNotification('CA 证书安装成功', 'success')
       caInstalled.value = true

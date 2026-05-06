@@ -553,6 +553,10 @@ func (a *App) InstallCACert() string {
 	}
 
 	if err := cert.InstallCACert(certMgr.CACertFile(), a.logProxy); err != nil {
+		errStr := err.Error()
+		if strings.Contains(errStr, "permission denied") || strings.Contains(errStr, "权限") || strings.Contains(errStr, "denied") {
+			return fmt.Sprintf("需要 root 权限才能安装系统 CA 证书。\n请运行: sudo %s elevate\n\n(非必需: 不安装也可正常使用，只是浏览器会提示不安全)", os.Args[0])
+		}
 		return fmt.Sprintf("安装 CA 证书失败: %v", err)
 	}
 
