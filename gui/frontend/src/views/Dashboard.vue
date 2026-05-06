@@ -8,7 +8,7 @@ const proxyStore = useProxyStore()
 const configStore = useConfigStore()
 const uiStore = useUIStore()
 
-const port = ref(443)
+const port = ref(8443)
 const loading = ref(false)
 
 const canStart = computed(() => !proxyStore.running && !proxyStore.starting && !proxyStore.stopping)
@@ -29,9 +29,16 @@ async function handleStart() {
   loading.value = false
 
   if (err) {
-    uiStore.showNotification(`启动失败: ${err}`, 'error')
+    if (err.includes('root') || err.includes('permission') || err.includes('权限')) {
+      uiStore.showNotification(`${err}（已自动切换到端口 8443）`, 'error', 8000)
+      if (port.value < 1024) {
+        port.value = 8443
+      }
+    } else {
+      uiStore.showNotification(`启动失败: ${err}`, 'error')
+    }
   } else {
-    uiStore.showNotification('代理服务已启动', 'success')
+    uiStore.showNotification(`代理服务已启动 (端口 ${port.value})`, 'success')
   }
 }
 

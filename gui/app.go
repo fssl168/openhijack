@@ -378,6 +378,10 @@ func (a *App) StartProxy(configPath string, port int) string {
 		return fmt.Sprintf("配置文件不存在: %s", configPath)
 	}
 
+	if port < 1024 && os.Geteuid() != 0 {
+		return fmt.Sprintf("端口 %d 需要 root 权限，请使用 ≥1024 的端口 (如 8443) 或以 sudo 启动应用", port)
+	}
+
 	dataDir := a.getDataDir()
 	certMgr := cert.NewCertManager(dataDir)
 
@@ -422,7 +426,11 @@ func (a *App) StartProxy(configPath string, port int) string {
 
 	go func() {
 		if err := server.Start(); err != nil {
-			a.logProxy(fmt.Sprintf("代理服务器错误: %v", err))
+			errMsg := fmt.Sprintf("代理服务器错误: %v", err)
+			if strings.Contains(err.Error(), "permission denied") || strings.Contains(err.Error(), "bind:") {
+				errMsg = fmt.Sprintf("端口 %d 绑定失败 (权限不足): %v\n建议: 使用端口 8443 或以 sudo 运行应用", port, err)
+			}
+			a.logProxy(errMsg)
 			a.mu.Lock()
 			a.running = false
 			a.mu.Unlock()
