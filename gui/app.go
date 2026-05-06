@@ -370,8 +370,11 @@ func (a *App) StartProxy(configPath string, port int) string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if a.running {
-		return "代理服务已在运行中"
+	if a.server != nil {
+		a.logProxy("检测到残留服务实例，正在清理...")
+		a.server.Stop()
+		a.server = nil
+		a.running = false
 	}
 
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
@@ -454,17 +457,18 @@ func (a *App) StopProxy() string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if !a.running {
-		return "代理服务未运行"
-	}
-
 	if a.server != nil {
+		a.logProxy("正在停止代理服务...")
 		a.server.Stop()
 		a.server = nil
 	}
 
+	wasRunning := a.running
 	a.running = false
-	a.logProxy("代理服务已停止")
+
+	if wasRunning {
+		a.logProxy("代理服务已停止")
+	}
 
 	return ""
 }

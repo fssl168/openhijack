@@ -129,8 +129,8 @@ export const useProxyStore = defineStore('proxy', {
     },
 
     async stop(): Promise<string | null> {
-      if (this._state === 'stopped' || this._state === 'stopping') {
-        return '代理服务未运行'
+      if (this._state === 'stopping') {
+        return '正在停止中...'
       }
 
       this._transition('stopping')
