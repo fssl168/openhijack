@@ -1,0 +1,7 @@
+node_modules/
+dist/
+openhijack.exe
+openhijack-gui
+*.exe
+.DS_Store
+Thumbs.db
