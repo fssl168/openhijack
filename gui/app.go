@@ -299,7 +299,7 @@ func (a *App) CreateConfig(data ConfigData) string {
 	data.Path = a.resolveConfigPath(data.Path)
 
 	dir := filepath.Dir(data.Path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := mkdirAll(dir); err != nil {
 		return fmt.Sprintf("创建配置目录失败: %v", err)
 	}
 
@@ -588,17 +588,25 @@ func (a *App) buildConfigContent(data ConfigData) string {
 }
 
 func (a *App) resolveConfigPath(path string) string {
-	if filepath.IsAbs(path) {
-		return path
-	}
-
 	if strings.HasPrefix(path, "~") {
-		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, path[1:])
+		home, err := os.UserHomeDir()
+		if err == nil {
+			rest := path[1:]
+			rest = strings.TrimLeft(rest, string(filepath.Separator))
+			rest = strings.ReplaceAll(rest, "/", string(filepath.Separator))
+			rest = strings.ReplaceAll(rest, "\\", string(filepath.Separator))
+			return filepath.Clean(filepath.Join(home, rest))
 		}
 	}
 
-	return filepath.Join(a.getConfigDir(), path)
+	path = strings.ReplaceAll(path, "/", string(filepath.Separator))
+	path = strings.ReplaceAll(path, "\\", string(filepath.Separator))
+
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path)
+	}
+
+	return filepath.Clean(filepath.Join(a.getConfigDir(), path))
 }
 
 func (a *App) getConfigDir() string {
@@ -703,6 +711,23 @@ func (a *App) ExportConfig(configPath string) string {
 	return string(data)
 }
 
+func mkdirAll(dir string) error {
+	err := os.MkdirAll(dir, 0755)
+	if err != nil {
+		if os.IsExist(err) {
+			return nil
+		}
+		if strings.Contains(err.Error(), "Access is denied") || strings.Contains(err.Error(), "拒绝访问") {
+			info, statErr := os.Stat(dir)
+			if statErr == nil && info.IsDir() {
+				return nil
+			}
+		}
+		return err
+	}
+	return nil
+}
+
 func (a *App) ImportConfig(configText string, savePath string) string {
 	if configText == "" {
 		return "配置内容不能为空"
@@ -724,7 +749,7 @@ func (a *App) ImportConfig(configText string, savePath string) string {
 	}
 
 	dir := filepath.Dir(savePath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := mkdirAll(dir); err != nil {
 		return fmt.Sprintf("创建目录失败: %v", err)
 	}
 
@@ -762,7 +787,7 @@ func (a *App) ImportConfigFromJSON(jsonText string, savePath string) string {
 	}
 
 	dir := filepath.Dir(savePath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := mkdirAll(dir); err != nil {
 		return fmt.Sprintf("创建目录失败: %v", err)
 	}
 

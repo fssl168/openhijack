@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
-import type { StatusInfo, LogEntry, LogLevel } from '@/types'
-import { invoke } from '@/utils/runtime'
+import { StartProxy as StartProxyApi, StopProxy as StopProxyApi, GetStatus as GetStatusApi } from '@/utils/runtime'
+import type { StatusInfo as StatusInfoType, LogEntry, LogLevel } from '@/types'
 
 export const useProxyStore = defineStore('proxy', {
   state: () => ({
@@ -16,7 +16,7 @@ export const useProxyStore = defineStore('proxy', {
   }),
 
   getters: {
-    statusInfo: (state): StatusInfo => ({
+    statusInfo: (state): StatusInfoType => ({
       running: state.running,
       port: state.port,
       host: state.host,
@@ -53,7 +53,7 @@ export const useProxyStore = defineStore('proxy', {
           raw,
         }
       }
-      
+
       const simpleMatch = raw.match(/\[openhijack\]\s+(\d{2}:\d{2}:\d{2}\.\d{3})\s+(.*)/)
       if (simpleMatch) {
         return {
@@ -89,7 +89,7 @@ export const useProxyStore = defineStore('proxy', {
 
     async start(configPath: string, port: number): Promise<string | null> {
       try {
-        const err = await invoke('StartProxy', configPath, port)
+        const err = await StartProxyApi(configPath, port)
         if (err) return err
         this.running = true
         this.currentConfig = configPath
@@ -103,7 +103,7 @@ export const useProxyStore = defineStore('proxy', {
 
     async stop(): Promise<string | null> {
       try {
-        const err = await invoke('StopProxy')
+        const err = await StopProxyApi()
         if (err) return err
         this.running = false
         this.uptime = ''
@@ -113,9 +113,9 @@ export const useProxyStore = defineStore('proxy', {
       }
     },
 
-    async getStatus(): Promise<StatusInfo | null> {
+    async getStatus(): Promise<StatusInfoType | null> {
       try {
-        const status = await invoke('GetStatus')
+        const status = await GetStatusApi() as StatusInfoType
         if (!status) return null
         this.running = status.running
         this.port = status.port

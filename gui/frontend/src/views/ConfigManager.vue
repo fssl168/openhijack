@@ -2,8 +2,9 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useConfigStore } from '@/stores/config'
 import { useUIStore } from '@/stores/ui'
-import { invoke, isRuntimeReady } from '@/utils/runtime'
-import type { ConfigInfo, ConfigData, ConfigGroupData } from '@/types'
+import { GetSupportedProviders, ExportConfig, OpenFileDialog, LoadConfigFile,
+  ImportConfig, ImportConfigFromFile, ImportConfigFromJSON, isRuntimeReady } from '@/utils/runtime'
+import type { ConfigInfo, ConfigData } from '@/types'
 
 const configStore = useConfigStore()
 const uiStore = useUIStore()
@@ -40,7 +41,7 @@ onMounted(async () => {
 
 async function loadProviders() {
   try {
-    providers.value = await invoke('GetSupportedProviders') || []
+    providers.value = await GetSupportedProviders() || []
   } catch {
     providers.value = [
       { id: 'openai_chat_completion', name: 'OpenAI 兼容 API', default_url: 'https://api.openai.com', default_route: '/v1', models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo'], api_key_hint: 'sk-...' },
@@ -157,7 +158,7 @@ watch(() => group.value.provider, (newProvider) => {
 
 async function handleExport(config: ConfigInfo) {
   try {
-    const result = await invoke('ExportConfig', config.path)
+    const result = await ExportConfig(config.path)
     if (result && result.startsWith('配置')) {
       uiStore.showNotification(result, 'error')
     } else {
@@ -193,11 +194,11 @@ async function handleImport() {
   try {
     let err: string
     if (importFilePath.value) {
-      err = await invoke('ImportConfigFromFile', importFilePath.value, importSavePath.value)
+      err = await ImportConfigFromFile(importFilePath.value, importSavePath.value)
     } else if (importFormat.value === 'json') {
-      err = await invoke('ImportConfigFromJSON', importText.value, importSavePath.value)
+      err = await ImportConfigFromJSON(importText.value, importSavePath.value)
     } else {
-      err = await invoke('ImportConfig', importText.value, importSavePath.value)
+      err = await ImportConfig(importText.value, importSavePath.value)
     }
 
     if (err) {
@@ -222,7 +223,7 @@ async function handleSelectFile() {
   }
 
   try {
-    const filePath = await invoke('OpenFileDialog')
+    const filePath = await OpenFileDialog()
     if (!filePath) return
 
     importFilePath.value = filePath
@@ -235,7 +236,7 @@ async function handleSelectFile() {
       importFormat.value = 'toml'
     }
 
-    const fileContent = await invoke('LoadConfigFile', filePath)
+    const fileContent = await LoadConfigFile(filePath)
     if (fileContent && !fileContent.startsWith('读取') && !fileContent.startsWith('请')) {
       importText.value = fileContent
     }

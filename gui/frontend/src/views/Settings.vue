@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useUIStore } from '@/stores/ui'
-import { invoke } from '@/utils/runtime'
+import { GetSystemInfo, InstallCACert, UninstallCACert } from '@/utils/runtime'
 
 const uiStore = useUIStore()
 
@@ -26,7 +26,7 @@ onMounted(async () => {
 
 async function loadSystemInfo() {
   try {
-    const info = await invoke('GetSystemInfo')
+    const info = await GetSystemInfo()
     if (info) {
       systemInfo.value = info
     }
@@ -48,7 +48,7 @@ async function loadSystemInfo() {
 async function handleInstallCert() {
   loading.value = true
   try {
-    const err = await invoke('InstallCACert')
+    const err = await InstallCACert()
     if (err) {
       uiStore.showNotification(`安装失败: ${err}`, 'error')
     } else {
@@ -65,7 +65,7 @@ async function handleInstallCert() {
 async function handleUninstallCert() {
   loading.value = true
   try {
-    await invoke('UninstallCACert')
+    await UninstallCACert()
     uiStore.showNotification('CA 证书已卸载', 'info')
     caInstalled.value = false
   } catch (e: any) {

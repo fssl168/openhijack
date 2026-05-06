@@ -1,59 +1,34 @@
-let runtimeReady = false
-let checkCount = 0
-const MAX_CHECK_COUNT = 50
-
-function waitForRuntime(): Promise<void> {
-  return new Promise((resolve) => {
-    const check = () => {
-      const rt = (window as any).runtime
-      if (rt && rt.Invoke) {
-        runtimeReady = true
-        resolve()
-        return
-      }
-
-      checkCount++
-      if (checkCount >= MAX_CHECK_COUNT) {
-        console.warn('Wails runtime 可能在开发模式中未正确加载')
-        resolve()
-        return
-      }
-
-      setTimeout(check, 100)
-    }
-
-    check()
-  })
+function getWailsFunc(name: string): any {
+  const go = (window as any).go
+  if (!go || !go.main || !go.main.App) {
+    throw new Error('Wails runtime 未初始化')
+  }
+  return go.main.App[name]
 }
 
-let initPromise: Promise<void> | null = null
-
-export async function invoke(method: string, ...args: any[]): Promise<any> {
-  if (!initPromise) {
-    initPromise = waitForRuntime()
-  }
-
-  await initPromise
-
-  const rt = (window as any).runtime
-  if (!rt) {
-    throw new Error('Wails runtime 未初始化 (runtime 对象不存在)')
-  }
-  if (!rt.Invoke) {
-    throw new Error('Wails runtime 未初始化 (Invoke 方法不可用)')
-  }
-
-  try {
-    return await rt.Invoke(`main.App.${method}`, ...args)
-  } catch (err: any) {
-    if (err?.message?.includes('runtime')) {
-      throw new Error('Wails runtime 调用失败: ' + (err.message || '未知错误'))
-    }
-    throw err
-  }
-}
+export const CreateConfig = (arg1: any) => getWailsFunc('CreateConfig')(arg1)
+export const DeleteConfig = (arg1: string) => getWailsFunc('DeleteConfig')(arg1)
+export const ExportConfig = (arg1: string) => getWailsFunc('ExportConfig')(arg1)
+export const GetConfigs = () => getWailsFunc('GetConfigs')()
+export const GetLogs = (arg1: number) => getWailsFunc('GetLogs')(arg1)
+export const GetProviderDefaults = (arg1: string) => getWailsFunc('GetProviderDefaults')(arg1)
+export const GetStatus = () => getWailsFunc('GetStatus')()
+export const GetSupportedProviders = () => getWailsFunc('GetSupportedProviders')()
+export const GetSystemInfo = () => getWailsFunc('GetSystemInfo')()
+export const ImportConfig = (arg1: string, arg2: string) => getWailsFunc('ImportConfig')(arg1, arg2)
+export const ImportConfigFromFile = (arg1: string, arg2: string) => getWailsFunc('ImportConfigFromFile')(arg1, arg2)
+export const ImportConfigFromJSON = (arg1: string, arg2: string) => getWailsFunc('ImportConfigFromJSON')(arg1, arg2)
+export const InstallCACert = () => getWailsFunc('InstallCACert')()
+export const LoadConfigFile = (arg1: string) => getWailsFunc('LoadConfigFile')(arg1)
+export const OpenDirectoryDialog = () => getWailsFunc('OpenDirectoryDialog')()
+export const OpenFileDialog = () => getWailsFunc('OpenFileDialog')()
+export const StartProxy = (arg1: string, arg2: number) => getWailsFunc('StartProxy')(arg1, arg2)
+export const StopProxy = () => getWailsFunc('StopProxy')()
+export const TestConnection = (arg1: string) => getWailsFunc('TestConnection')(arg1)
+export const UninstallCACert = () => getWailsFunc('UninstallCACert')()
+export const UpdateConfig = (arg1: any) => getWailsFunc('UpdateConfig')(arg1)
 
 export function isRuntimeReady(): boolean {
-  const rt = (window as any).runtime
-  return !!(rt && rt.Invoke)
+  const go = (window as any).go
+  return !!(go && go.main && go.main.App)
 }

@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
+import { GetConfigs, CreateConfig as CreateConfigApi, UpdateConfig as UpdateConfigApi,
+  DeleteConfig as DeleteConfigApi, TestConnection as TestConnectionApi } from '@/utils/runtime'
 import type { ConfigInfo, ConfigData, TestResult } from '@/types'
-import { invoke } from '@/utils/runtime'
 
 export const useConfigStore = defineStore('config', {
   state: () => ({
@@ -11,7 +12,7 @@ export const useConfigStore = defineStore('config', {
 
   getters: {
     activeConfigInfo: (state): ConfigInfo | undefined => {
-      return state.configs.find(c => c.active)
+      return state.configs.find((c: ConfigInfo) => c.active)
     },
   },
 
@@ -19,7 +20,7 @@ export const useConfigStore = defineStore('config', {
     async loadConfigs(): Promise<string | null> {
       this.loading = true
       try {
-        this.configs = await invoke('GetConfigs') || []
+        this.configs = await GetConfigs() || []
         const active = this.configs.find((c: ConfigInfo) => c.active)
         this.activeConfig = active?.path || null
         return null
@@ -32,7 +33,7 @@ export const useConfigStore = defineStore('config', {
 
     async createConfig(data: ConfigData): Promise<string | null> {
       try {
-        const err = await invoke('CreateConfig', data)
+        const err = await CreateConfigApi(data as any)
         if (err) return err
         await this.loadConfigs()
         return null
@@ -43,7 +44,7 @@ export const useConfigStore = defineStore('config', {
 
     async updateConfig(data: ConfigData): Promise<string | null> {
       try {
-        const err = await invoke('UpdateConfig', data)
+        const err = await UpdateConfigApi(data as any)
         if (err) return err
         await this.loadConfigs()
         return null
@@ -54,7 +55,7 @@ export const useConfigStore = defineStore('config', {
 
     async deleteConfig(path: string): Promise<string | null> {
       try {
-        const err = await invoke('DeleteConfig', path)
+        const err = await DeleteConfigApi(path)
         if (err) return err
         await this.loadConfigs()
         return null
@@ -65,7 +66,7 @@ export const useConfigStore = defineStore('config', {
 
     async testConnection(configPath: string): Promise<TestResult | null> {
       try {
-        return await invoke('TestConnection', configPath)
+        return await TestConnectionApi(configPath) as TestResult
       } catch (e: any) {
         return {
           success: false,
