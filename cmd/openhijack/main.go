@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"openhijack/internal/cert"
@@ -21,6 +22,7 @@ import (
 const (
 	defaultListenHost = ""
 	defaultListenPort = 443
+	fallbackPort     = 8443
 )
 
 const defaultConfigTemplate = `# OpenHijack 配置模板
@@ -100,19 +102,24 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  openhijack serve [选项]    启动代理服务器 (默认 HTTPS:443)\n")
 	fmt.Fprintf(os.Stderr, "  openhijack cleanup         移除 hosts、系统 CA 和本地证书\n")
 	fmt.Fprintf(os.Stderr, "  openhijack paths           显示数据路径\n")
-	fmt.Fprintf(os.Stderr, "  openhijack elevate         权限提升并启动 (sudo)\n\n")
+	fmt.Fprintf(os.Stderr, "  openhijack elevate         权限提升并启动 (sudo)\n")
+	fmt.Fprintf(os.Stderr, "  openhijack install         Linux 安装脚本 (需 sudo)\n\n")
 	fmt.Fprintf(os.Stderr, "init 选项:\n")
 	fmt.Fprintf(os.Stderr, "  --config string              配置文件路径\n")
 	fmt.Fprintf(os.Stderr, "  --force                      覆盖已存在的配置文件\n\n")
 	fmt.Fprintf(os.Stderr, "serve 选项:\n")
 	fmt.Fprintf(os.Stderr, "  --host string                监听地址 (默认: 所有接口)\n")
-	fmt.Fprintf(os.Stderr, "  --port int                   监听端口 (默认: %d)\n", defaultListenPort)
+	fmt.Fprintf(os.Stderr, "  --port int                   监听端口 (默认: %d，无权限时自动降级到 %d)\n", defaultListenPort, fallbackPort)
 	fmt.Fprintf(os.Stderr, "  --config string              配置文件路径\n")
 	fmt.Fprintf(os.Stderr, "  --debug                      调试模式\n")
 	fmt.Fprintf(os.Stderr, "  --http                       使用纯 HTTP 模式 (不使用 TLS)\n")
 	fmt.Fprintf(os.Stderr, "  --no-manage                  不自动管理证书和 hosts\n")
 	fmt.Fprintf(os.Stderr, "  --disable-ssl-strict-mode    禁用上游 TLS 证书校验\n")
-	fmt.Fprintf(os.Stderr, "  --force-stream               强制使用流模式\n")
+	fmt.Fprintf(os.Stderr, "  --force-stream               强制使用流模式\n\n")
+	fmt.Fprintf(os.Stderr, "Linux 权限提示:\n")
+	fmt.Fprintf(os.Stderr, "  端口 <1024 需要 root 或 cap_net_bind_service\n")
+	fmt.Fprintf(os.Stderr, "  安装: sudo bash scripts/install.sh\n")
+	fmt.Fprintf(os.Stderr, "  卸载: sudo bash scripts/uninstall.sh\n")
 }
 
 func generateAuthKey() (string, error) {
@@ -247,6 +254,10 @@ func runServe(configPath string, host string, port int, debug bool, disableSSLSt
 				fmt.Fprintf(os.Stderr, "生成服务器证书失败: %v\n", err)
 				os.Exit(1)
 			}
+			if err := certMgr.GenerateOpenRouterCert(logger.Printf); err != nil {
+				fmt.Fprintf(os.Stderr, "生成 OpenRouter 证书失败: %v\n", err)
+				os.Exit(1)
+			}
 		} else {
 			logger.Printf("服务器证书已存在")
 		}
@@ -287,10 +298,21 @@ func runServe(configPath string, host string, port int, debug bool, disableSSLSt
 	server, err := proxy.NewProxyServer(opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "创建代理服务器失败: %v\n", err)
+		if cleanupFn != nil {
+			cleanupFn()
+		}
 		os.Exit(1)
 	}
 
 	if err := server.Start(); err != nil {
+		if isPrivilegedPortError(err) && port < 1024 && !platform.IsPrivileged() && port != fallbackPort {
+			logger.Printf("端口 %d 绑定失败 (需要特权权限)，自动降级到端口 %d", port, fallbackPort)
+			if cleanupFn != nil {
+				cleanupFn()
+			}
+			runServe(configPath, host, fallbackPort, debug, disableSSLStrict, forceStream, useTLS, noManage)
+			return
+		}
 		fmt.Fprintf(os.Stderr, "启动代理服务器失败: %v\n", err)
 		if cleanupFn != nil {
 			cleanupFn()
@@ -299,6 +321,18 @@ func runServe(configPath string, host string, port int, debug bool, disableSSLSt
 	}
 
 	server.Wait()
+}
+
+func isPrivilegedPortError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "permission denied") ||
+		strings.Contains(errStr, "bind: permission") ||
+		strings.Contains(errStr, "address already in use") ||
+		strings.Contains(errStr, "socket operation on non-socket") ||
+		strings.Contains(errStr, "EACCES")
 }
 
 func cleanupRuntimeState(dataDir string, logf func(string, ...interface{})) {

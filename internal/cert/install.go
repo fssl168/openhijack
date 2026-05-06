@@ -48,25 +48,25 @@ func installCALinux(caCertPath string, logf func(string, ...interface{})) error 
 		return fmt.Errorf("读取 CA 证书失败: %w", err)
 	}
 
-	if path, err := exec.LookPath("update-ca-certificates"); err == nil {
-		dstDir := "/usr/local/share/ca-certificates/"
-		if err := os.MkdirAll(dstDir, 0755); err != nil {
-			return fmt.Errorf("创建 CA 目录失败: %w", err)
+	if path, err := exec.LookPath("trust"); err == nil {
+		anchorDir := "/etc/ca-certificates/trust-source/anchors/"
+		if err := os.MkdirAll(anchorDir, 0755); err != nil {
+			return fmt.Errorf("创建 anchors 目录失败: %w", err)
 		}
-		dst := filepath.Join(dstDir, caCertFileName)
+		dst := filepath.Join(anchorDir, caCertFileName)
 		if err := os.WriteFile(dst, src, 0644); err != nil {
 			return fmt.Errorf("复制 CA 证书到 %s 失败: %w", dst, err)
 		}
 		logf("CA 证书已复制到 %s", dst)
 
-		logf("运行 update-ca-certificates...")
-		cmd := exec.Command(path)
+		logf("运行 trust extract-compat...")
+		cmd := exec.Command(path, "extract-compat")
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("update-ca-certificates 失败: %w", err)
+			return fmt.Errorf("trust extract-compat 失败: %w", err)
 		}
-		logf("CA 证书安装成功 (Debian / Ubuntu / Alpine Linux)")
+		logf("CA 证书安装成功 (Arch Linux / Fedora - p11-kit/trust)")
 		return nil
 	}
 
@@ -92,25 +92,25 @@ func installCALinux(caCertPath string, logf func(string, ...interface{})) error 
 		return nil
 	}
 
-	if path, err := exec.LookPath("trust"); err == nil {
-		anchorDir := "/etc/ca-certificates/trust-source/anchors/"
-		if err := os.MkdirAll(anchorDir, 0755); err != nil {
-			return fmt.Errorf("创建 anchors 目录失败: %w", err)
+	if path, err := exec.LookPath("update-ca-certificates"); err == nil {
+		dstDir := "/usr/local/share/ca-certificates/"
+		if err := os.MkdirAll(dstDir, 0755); err != nil {
+			return fmt.Errorf("创建 CA 目录失败: %w", err)
 		}
-		dst := filepath.Join(anchorDir, caCertFileName)
+		dst := filepath.Join(dstDir, caCertFileName)
 		if err := os.WriteFile(dst, src, 0644); err != nil {
 			return fmt.Errorf("复制 CA 证书到 %s 失败: %w", dst, err)
 		}
 		logf("CA 证书已复制到 %s", dst)
 
-		logf("运行 trust extract-compat...")
-		cmd := exec.Command(path, "extract-compat")
+		logf("运行 update-ca-certificates...")
+		cmd := exec.Command(path)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("trust extract-compat 失败: %w", err)
+			return fmt.Errorf("update-ca-certificates 失败: %w", err)
 		}
-		logf("CA 证书安装成功 (Arch Linux / Fedora - p11-kit/trust)")
+		logf("CA 证书安装成功 (Debian / Ubuntu / Alpine Linux)")
 		return nil
 	}
 
@@ -170,8 +170,8 @@ func removeCALinux(logf func(string, ...interface{})) {
 		return
 	}
 
-	if path, err := exec.LookPath("update-ca-certificates"); err == nil {
-		cmd := exec.Command(path)
+	if path, err := exec.LookPath("trust"); err == nil {
+		cmd := exec.Command(path, "extract-compat")
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		cmd.Run()
@@ -180,8 +180,8 @@ func removeCALinux(logf func(string, ...interface{})) {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		cmd.Run()
-	} else if path, err := exec.LookPath("trust"); err == nil {
-		cmd := exec.Command(path, "extract-compat")
+	} else if path, err := exec.LookPath("update-ca-certificates"); err == nil {
+		cmd := exec.Command(path)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		cmd.Run()

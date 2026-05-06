@@ -1,0 +1,21 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "openhijack-gui",
+  "outputfilename": "openhijack-gui",
+  "frontend:dir": "frontend",
+  "frontend:install": "powershell -ExecutionPolicy Bypass -File ./install.ps1",
+  "frontend:build": "powershell -ExecutionPolicy Bypass -File ./build.ps1",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "OpenHijack",
+    "email": "66630203@qq.com"
+  },
+  "Info": {
+    "companyName": "OpenHijack",
+    "productName": "OpenHijack",
+    "productVersion": "1.0.0",
+    "copyright": "Copyright 2026",
+    "comments": "本地 HTTPS 代理服务器"
+  }
+}

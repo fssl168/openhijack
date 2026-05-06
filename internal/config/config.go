@@ -8,7 +8,21 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-const ProviderOpenAIChatCompletion = "openai_chat_completion"
+const (
+	ProviderOpenAIChatCompletion = "openai_chat_completion"
+	ProviderOpenAIResponse       = "openai_response"
+	ProviderAnthropic            = "anthropic"
+	ProviderGemini               = "gemini"
+	ProviderOpenRouter           = "openrouter"
+)
+
+var supportedProviders = map[string]bool{
+	ProviderOpenAIChatCompletion: true,
+	ProviderOpenAIResponse:       true,
+	ProviderAnthropic:            true,
+	ProviderGemini:               true,
+	ProviderOpenRouter:           true,
+}
 
 type ConfigGroup struct {
 	Name                   string `toml:"name"`
@@ -72,25 +86,23 @@ func normalizeProvider(provider string) (string, error) {
 	case "", ProviderOpenAIChatCompletion, "openai":
 		return ProviderOpenAIChatCompletion, nil
 	case "openai_response":
-		return "openai_response", nil
+		return ProviderOpenAIResponse, nil
 	case "anthropic":
-		return "anthropic", nil
+		return ProviderAnthropic, nil
 	case "gemini":
-		return "gemini", nil
+		return ProviderGemini, nil
+	case "openrouter":
+		return ProviderOpenRouter, nil
 	default:
 		return "", fmt.Errorf("不支持的 provider: %q", provider)
 	}
 }
 
 func validateConfigGroup(g *ConfigGroup) error {
-	switch g.Provider {
-	case ProviderOpenAIChatCompletion:
-		return nil
-	case "openai_response", "anthropic", "gemini":
-		return fmt.Errorf("provider %q 尚未实现，目前仅支持 %q", g.Provider, ProviderOpenAIChatCompletion)
-	default:
+	if !supportedProviders[g.Provider] {
 		return fmt.Errorf("不支持的 provider: %q", g.Provider)
 	}
+	return nil
 }
 
 func (c *Config) CurrentGroup() *ConfigGroup {
