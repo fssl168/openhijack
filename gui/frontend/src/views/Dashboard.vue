@@ -11,9 +11,10 @@ const uiStore = useUIStore()
 const port = ref(443)
 const loading = ref(false)
 
-const canStart = computed(() => !proxyStore.running && !proxyStore.starting && !proxyStore.stopping && !!configStore.activeConfig)
-const canStop = computed(() => proxyStore.running && !proxyStore.starting && !proxyStore.stopping)
+const canStart = computed(() => !proxyStore.running && !proxyStore.starting && !proxyStore.stopping)
+const canStop = computed(() => (proxyStore.running || proxyStore.starting) && !proxyStore.stopping)
 const isBusy = computed(() => proxyStore.starting || proxyStore.stopping || loading.value)
+const startDisabled = computed(() => isBusy.value || !configStore.activeConfig)
 
 const recentLogs = computed(() => proxyStore.logs.slice(-8))
 
@@ -101,8 +102,9 @@ async function handleStop() {
             <button
               v-if="canStart"
               @click="handleStart"
-              :disabled="isBusy"
-              class="btn-success px-8"
+              :disabled="startDisabled"
+              :class="['btn-success px-8', { 'opacity-50 cursor-not-allowed': startDisabled }]"
+              :title="!configStore.activeConfig ? '请先在配置管理中选择一个配置' : ''"
             >
               ▶ 启动
             </button>
@@ -127,13 +129,6 @@ async function handleStop() {
               class="btn-error px-8 opacity-70 cursor-wait"
             >
               ⏳ 停止中...
-            </button>
-            <button
-              v-else
-              disabled
-              class="btn-outline px-8 opacity-50"
-            >
-              等待中...
             </button>
           </div>
         </div>
