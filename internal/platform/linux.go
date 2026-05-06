@@ -11,6 +11,10 @@ import (
 
 type LinuxPlatform struct{}
 
+func init() {
+	currentPlatform = &LinuxPlatform{}
+}
+
 func (p *LinuxPlatform) IsPrivileged() bool {
 	return os.Geteuid() == 0
 }

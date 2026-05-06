@@ -66,6 +66,10 @@ export function OpenFileDialog() {
   return window['go']['main']['App']['OpenFileDialog']();
 }
 
+export function SelectConfig(arg1) {
+  return window['go']['main']['App']['SelectConfig'](arg1);
+}
+
 export function StartProxy(arg1, arg2) {
   return window['go']['main']['App']['StartProxy'](arg1, arg2);
 }

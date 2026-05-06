@@ -2,6 +2,8 @@ import { defineStore } from 'pinia'
 import { StartProxy as StartProxyApi, StopProxy as StopProxyApi, GetStatus as GetStatusApi } from '@/utils/runtime'
 import type { StatusInfo as StatusInfoType, LogEntry, LogLevel } from '@/types'
 
+let pollingTimer: ReturnType<typeof setInterval> | null = null
+
 export const useProxyStore = defineStore('proxy', {
   state: () => ({
     running: false as boolean,
@@ -127,6 +129,21 @@ export const useProxyStore = defineStore('proxy', {
         return status
       } catch {
         return null
+      }
+    },
+
+    startPolling(intervalMs: number = 3000) {
+      if (pollingTimer) return
+      this.getStatus()
+      pollingTimer = setInterval(() => {
+        this.getStatus()
+      }, intervalMs)
+    },
+
+    stopPolling() {
+      if (pollingTimer) {
+        clearInterval(pollingTimer)
+        pollingTimer = null
       }
     },
   },

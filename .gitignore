@@ -11,6 +11,11 @@
 *.out
 coverage.out
 
+# Wails build artifacts
+gui/build/bin/
+gui/gui
+gui/frontend/node_modules/
+
 # Editor and OS files
 .DS_Store
 .idea/

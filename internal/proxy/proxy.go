@@ -188,6 +188,7 @@ func (s *ProxyServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	requestID := s.newRequestID()
 
 	s.logRequest(requestID, fmt.Sprintf("收到 Chat Completions 请求 %s", s.buildChatCompletionsRoute()))
+	s.logRequest(requestID, fmt.Sprintf("请求方法: %s, Content-Length: %s", r.Method, r.Header.Get("Content-Length")))
 
 	if r.Method != http.MethodPost {
 		WriteJSON(w, http.StatusMethodNotAllowed, map[string]interface{}{
@@ -230,6 +231,8 @@ func (s *ProxyServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	if !s.authorizeRequest(w, r, requestID, "Chat Completions 请求") {
 		return
 	}
+
+	s.logRequest(requestID, "✅ 鉴权通过，准备转发到上游")
 
 	clientRequestedStream := false
 	if streamVal, ok := reqData["stream"]; ok {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { useProxyStore } from '@/stores/proxy'
 import { useConfigStore } from '@/stores/config'
 import { useUIStore } from '@/stores/ui'
@@ -17,6 +17,13 @@ onMounted(async () => {
   await configStore.loadConfigs()
   loadRecentLogs()
 })
+
+watch(() => configStore.activeConfig, async (newConfig) => {
+  if (newConfig) {
+    await proxyStore.getStatus()
+    loadRecentLogs()
+  }
+}, { immediate: false })
 
 async function handleStart() {
   if (!configStore.activeConfig) {

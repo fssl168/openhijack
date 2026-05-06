@@ -209,13 +209,16 @@ func (a *App) GetStatus() StatusInfo {
 		Config:  a.lastConfig,
 	}
 
-	if a.running {
-		status.Uptime = time.Since(a.startTime).Round(time.Second).String()
+	if a.lastConfig != "" {
 		if cfg, err := config.Load(a.lastConfig); err == nil {
 			group := cfg.CurrentGroup()
 			status.Model = group.ModelID
 			status.Provider = group.Provider
 		}
+	}
+
+	if a.running {
+		status.Uptime = time.Since(a.startTime).Round(time.Second).String()
 	}
 
 	return status
@@ -347,6 +350,19 @@ func (a *App) DeleteConfig(path string) string {
 		return fmt.Sprintf("删除配置文件失败: %v", err)
 	}
 
+	return ""
+}
+
+func (a *App) SelectConfig(configPath string) string {
+	if configPath == "" {
+		return "配置路径不能为空"
+	}
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		return fmt.Sprintf("配置文件不存在: %s", configPath)
+	}
+	a.mu.Lock()
+	a.lastConfig = configPath
+	a.mu.Unlock()
 	return ""
 }
 

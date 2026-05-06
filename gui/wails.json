@@ -3,8 +3,8 @@
   "name": "openhijack-gui",
   "outputfilename": "openhijack-gui",
   "frontend:dir": "frontend",
-  "frontend:install": "powershell -ExecutionPolicy Bypass -File ./install.ps1",
-  "frontend:build": "powershell -ExecutionPolicy Bypass -File ./build.ps1",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "auto",
   "author": {

@@ -34,6 +34,8 @@ export function OpenDirectoryDialog():Promise<string>;
 
 export function OpenFileDialog():Promise<string>;
 
+export function SelectConfig(arg1:string):Promise<string>;
+
 export function StartProxy(arg1:string,arg2:number):Promise<string>;
 
 export function StopProxy():Promise<string>;

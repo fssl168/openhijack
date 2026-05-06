@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { GetConfigs, CreateConfig as CreateConfigApi, UpdateConfig as UpdateConfigApi,
-  DeleteConfig as DeleteConfigApi, TestConnection as TestConnectionApi } from '@/utils/runtime'
+  DeleteConfig as DeleteConfigApi, TestConnection as TestConnectionApi,
+  SelectConfig as SelectConfigApi } from '@/utils/runtime'
 import type { ConfigInfo, ConfigData, TestResult } from '@/types'
 
 export const useConfigStore = defineStore('config', {
@@ -77,9 +78,15 @@ export const useConfigStore = defineStore('config', {
     },
 
     async setActiveConfig(path: string): Promise<string | null> {
-      this.activeConfig = path
-      await this.loadConfigs()
-      return null
+      try {
+        const err = await SelectConfigApi(path)
+        if (err) return err
+        this.activeConfig = path
+        await this.loadConfigs()
+        return null
+      } catch (e: any) {
+        return e?.message || '切换配置失败'
+      }
     },
   },
 })

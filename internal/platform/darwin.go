@@ -11,6 +11,10 @@ import (
 
 type DarwinPlatform struct{}
 
+func init() {
+	currentPlatform = &DarwinPlatform{}
+}
+
 func (p *DarwinPlatform) IsPrivileged() bool {
 	return os.Geteuid() == 0
 }

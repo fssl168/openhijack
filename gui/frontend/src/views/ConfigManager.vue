@@ -88,6 +88,16 @@ function handleEdit(config: ConfigInfo) {
   showEditor.value = true
 }
 
+async function handleSelectConfig(config: ConfigInfo) {
+  if (config.active) return
+  const err = await configStore.setActiveConfig(config.path)
+  if (err) {
+    uiStore.showNotification(`切换配置失败: ${err}`, 'error')
+  } else {
+    uiStore.showNotification(`已切换到: ${config.name}`, 'success')
+  }
+}
+
 async function handleSave() {
   if (!formData.value.path) {
     uiStore.showNotification('请指定配置文件路径', 'warn')
@@ -278,12 +288,12 @@ async function handleSelectFile() {
         <div
           v-for="config in configStore.configs"
           :key="config.path"
-          class="card flex items-center justify-between hover:border-primary-light transition-colors"
-          :class="{ 'border-primary-light': config.active }"
+          class="card flex items-center justify-between cursor-pointer hover:border-primary-light transition-colors"
+          :class="{ 'border-primary-light bg-primary-light/5': config.active }"
+          @click="handleSelectConfig(config)"
         >
           <div class="flex items-center gap-4">
-            <span v-if="config.active" class="w-2 h-2 rounded-full bg-green-400"></span>
-            <span v-else class="w-2 h-2 rounded-full bg-gray-500"></span>
+            <span class="w-2 h-2 rounded-full transition-colors" :class="config.active ? 'bg-green-400 shadow-sm shadow-green-400/50' : 'bg-gray-500'"></span>
             <div>
               <div class="font-medium">{{ config.name }}</div>
               <div class="text-sm text-text-muted">{{ config.provider }} / {{ config.model }}</div>
@@ -292,13 +302,13 @@ async function handleSelectFile() {
 
           <div class="flex items-center gap-2">
             <span v-if="config.active" class="text-xs text-green-400 mr-2">当前活跃</span>
-            <button @click="handleExport(config)" class="btn-outline px-3 py-1 text-sm" title="导出">
+            <button @click.stop="handleExport(config)" class="btn-outline px-3 py-1 text-sm" title="导出">
               📤
             </button>
-            <button @click="handleEdit(config)" class="btn-outline px-3 py-1 text-sm">
+            <button @click.stop="handleEdit(config)" class="btn-outline px-3 py-1 text-sm">
               编辑
             </button>
-            <button @click="handleDelete(config)" class="btn-outline px-3 py-1 text-sm text-error hover:bg-error/10">
+            <button @click.stop="handleDelete(config)" class="btn-outline px-3 py-1 text-sm text-error hover:bg-error/10">
               删除
             </button>
           </div>

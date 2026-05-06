@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted } from 'vue'
 import Dashboard from './views/Dashboard.vue'
 import ConfigManager from './views/ConfigManager.vue'
 import LogViewer from './views/LogViewer.vue'
@@ -10,6 +10,14 @@ import { useProxyStore } from './stores/proxy'
 const uiStore = useUIStore()
 const proxyStore = useProxyStore()
 const proxyStatus = computed(() => proxyStore.running)
+
+onMounted(() => {
+  proxyStore.startPolling()
+})
+
+onUnmounted(() => {
+  proxyStore.stopPolling()
+})
 
 const navItems = [
   { view: 'dashboard' as const, label: '📋 仪表盘' },

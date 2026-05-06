@@ -117,6 +117,12 @@ func (t *UpstreamTransport) ForwardChatCompletions(ctx context.Context, requestI
 		req.Header.Set("Accept", "text/event-stream")
 	}
 
+	t.logger.Printf("[%s] === 发送到上游的完整请求头 ===", requestID)
+	for k, v := range req.Header {
+		t.logger.Printf("[%s]   %s: %s", requestID, k, strings.Join(v, ", "))
+	}
+	t.logger.Printf("[%s] ==================================", requestID)
+
 	return t.client.Do(req)
 }
 
