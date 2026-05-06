@@ -17,7 +17,8 @@ export const useProxyStore = defineStore('proxy', {
     maxLogs: 500 as number,
     _pollingTimer: null as ReturnType<typeof setInterval> | null,
     _pollingActive: false as boolean,
-    _backendConfirmed: false as boolean,
+    _crashDetected: false as boolean,
+    _consecutiveDownCount: 0 as number,
   }),
 
   getters: {
@@ -51,15 +52,16 @@ export const useProxyStore = defineStore('proxy', {
 
   actions: {
     _transition(newState: ProxyState) {
-      const oldState = this._state
       this._state = newState
 
       if (newState === 'stopped') {
-        this._backendConfirmed = false
         this.uptime = ''
+        this._crashDetected = false
+        this._consecutiveDownCount = 0
       }
       if (newState === 'running') {
-        this._backendConfirmed = true
+        this._crashDetected = false
+        this._consecutiveDownCount = 0
       }
     },
 
@@ -76,40 +78,21 @@ export const useProxyStore = defineStore('proxy', {
     parseLog(raw: string): LogEntry | null {
       const match = raw.match(/\[openhijack\]\s+(\d{2}:\d{2}:\d{2}\.\d{3})\s+\[([^\]]+)\]\s+(.*)/)
       if (match) {
-        return {
-          timestamp: match[1],
-          level: this.detectLogLevel(match[3]),
-          message: match[3],
-          raw,
-        }
+        return { timestamp: match[1], level: this.detectLogLevel(match[3]), message: match[3], raw }
       }
 
       const simpleMatch = raw.match(/\[openhijack\]\s+(\d{2}:\d{2}:\d{2}\.\d{3})\s+(.*)/)
       if (simpleMatch) {
-        return {
-          timestamp: simpleMatch[1],
-          level: this.detectLogLevel(simpleMatch[2]),
-          message: simpleMatch[2],
-          raw,
-        }
+        return { timestamp: simpleMatch[1], level: this.detectLogLevel(simpleMatch[2]), message: simpleMatch[2], raw }
       }
 
-      return {
-        timestamp: new Date().toLocaleTimeString(),
-        level: 'info',
-        message: raw,
-        raw,
-      }
+      return { timestamp: new Date().toLocaleTimeString(), level: 'info', message: raw, raw }
     },
 
     detectLogLevel(message: string): LogLevel {
       const lower = message.toLowerCase()
-      if (lower.includes('error') || lower.includes('fail') || lower.includes('panic')) {
-        return 'error'
-      }
-      if (lower.includes('warn') || lower.includes('deprec') || lower.includes('降级')) {
-        return 'warn'
-      }
+      if (lower.includes('error') || lower.includes('fail') || lower.includes('panic')) return 'error'
+      if (lower.includes('warn') || lower.includes('deprec') || lower.includes('降级')) return 'warn'
       return 'info'
     },
 
@@ -136,8 +119,8 @@ export const useProxyStore = defineStore('proxy', {
 
         this._transition('running')
         this.uptime = '刚刚启动'
+        this._syncMetaFromBackend()
 
-        this._syncFromBackend()
         return null
       } catch (e: any) {
         this._transition('stopped')
@@ -163,32 +146,40 @@ export const useProxyStore = defineStore('proxy', {
       }
     },
 
-    async _syncFromBackend() {
+    async _syncMetaFromBackend() {
       try {
         const status = await GetStatusApi() as StatusInfoType
         if (!status) return
 
         this.port = status.port
         this.host = status.host
-        this.currentConfig = status.config
-        this.uptime = status.uptime
+        if (status.config) this.currentConfig = status.config
+        this.uptime = status.uptime || this.uptime
         this.model = status.model
         this.provider = status.provider
 
-        if (status.running && !this.running) {
-          this._transition('running')
-        } else if (!status.running && this._backendConfirmed && this._state === 'running') {
-          this._transition('stopped')
-        }
-
-        if (status.running) {
-          this._backendConfirmed = true
-        }
+        this._checkCrash(status)
       } catch {}
     },
 
+    _checkCrash(status: StatusInfoType) {
+      if (this._state !== 'running' && this._state !== 'starting') return
+
+      if (!status.running) {
+        this._consecutiveDownCount++
+
+        if (this._consecutiveDownCount >= 5) {
+          this._crashDetected = true
+          this._transition('stopped')
+          this.uptime = ''
+        }
+      } else {
+        this._consecutiveDownCount = 0
+      }
+    },
+
     async getStatus() {
-      await this._syncFromBackend()
+      await this._syncMetaFromBackend()
     },
 
     async fetchLogs(limit: number = 50) {
@@ -207,11 +198,11 @@ export const useProxyStore = defineStore('proxy', {
     startPolling(intervalMs: number = 3000) {
       if (this._pollingActive) return
       this._pollingActive = true
-      this._syncFromBackend()
+      this._syncMetaFromBackend()
       this.fetchLogs()
 
       this._pollingTimer = setInterval(() => {
-        this._syncFromBackend()
+        this._syncMetaFromBackend()
         this.fetchLogs()
       }, intervalMs)
     },
