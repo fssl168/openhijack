@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed, markRaw, onMounted, onUnmounted, shallowRef } from 'vue'
 import Dashboard from './views/Dashboard.vue'
 import ConfigManager from './views/ConfigManager.vue'
 import LogViewer from './views/LogViewer.vue'
@@ -9,7 +9,17 @@ import { useProxyStore } from './stores/proxy'
 
 const uiStore = useUIStore()
 const proxyStore = useProxyStore()
+
 const proxyStatus = computed(() => proxyStore.running)
+
+const components: Record<string, ReturnType<typeof markRaw>> = {
+  dashboard: markRaw(Dashboard),
+  configs: markRaw(ConfigManager),
+  logs: markRaw(LogViewer),
+  settings: markRaw(Settings),
+}
+
+const currentComponent = shallowRef(components.dashboard)
 
 onMounted(() => {
   proxyStore.startPolling()
@@ -17,6 +27,19 @@ onMounted(() => {
 
 onUnmounted(() => {
   proxyStore.stopPolling()
+})
+
+function onViewChange(view: string) {
+  const comp = components[view]
+  if (comp) {
+    currentComponent.value = comp
+  }
+}
+
+uiStore.$onAction(({ name, args }) => {
+  if (name === 'setView') {
+    onViewChange(args[0] as string)
+  }
 })
 
 const navItems = [
@@ -58,16 +81,15 @@ const navItems = [
       <div class="flex items-center gap-2">
         <span class="status-badge" :class="proxyStatus ? 'status-running' : 'status-stopped'">
           <span class="w-2 h-2 rounded-full" :class="proxyStatus ? 'bg-green-400' : 'bg-red-400'"></span>
-          {{ proxyStatus ? '运行中' : '已停止' }}
+          {{ proxyStore.starting ? '启动中...' : proxyStore.stopping ? '停止中...' : proxyStatus ? '运行中' : '已停止' }}
         </span>
       </div>
     </header>
 
     <main class="flex-1 overflow-hidden">
-      <Dashboard v-show="uiStore.currentView === 'dashboard'" />
-      <ConfigManager v-show="uiStore.currentView === 'configs'" />
-      <LogViewer v-show="uiStore.currentView === 'logs'" />
-      <Settings v-show="uiStore.currentView === 'settings'" />
+      <KeepAlive :include="['Dashboard', 'ConfigManager', 'LogViewer', 'Settings']">
+        <component :is="currentComponent" :key="uiStore.currentView" />
+      </KeepAlive>
     </main>
 
     <div class="fixed bottom-4 right-4 flex flex-col gap-2 z-50">

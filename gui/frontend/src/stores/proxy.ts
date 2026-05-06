@@ -1,10 +1,12 @@
 import { defineStore } from 'pinia'
-import { StartProxy as StartProxyApi, StopProxy as StopProxyApi, GetStatus as GetStatusApi } from '@/utils/runtime'
+import { StartProxy as StartProxyApi, StopProxy as StopProxyApi, GetStatus as GetStatusApi, GetLogs as GetLogsApi } from '@/utils/runtime'
 import type { StatusInfo as StatusInfoType, LogEntry, LogLevel } from '@/types'
+
+type ProxyState = 'stopped' | 'starting' | 'running' | 'stopping'
 
 export const useProxyStore = defineStore('proxy', {
   state: () => ({
-    running: false as boolean,
+    _state: 'stopped' as ProxyState,
     port: 443 as number,
     host: 'localhost' as string,
     currentConfig: null as string | null,
@@ -15,15 +17,24 @@ export const useProxyStore = defineStore('proxy', {
     maxLogs: 500 as number,
     _pollingTimer: null as ReturnType<typeof setInterval> | null,
     _pollingActive: false as boolean,
-    _starting: false as boolean,
-    _startedAt: 0 as number,
-    _consecutiveDownCount: 0 as number,
-    _gracePeriodMs: 5000 as number,
+    _backendConfirmed: false as boolean,
   }),
 
   getters: {
+    running(state): boolean {
+      return state._state === 'running' || state._state === 'starting'
+    },
+
+    starting(state): boolean {
+      return state._state === 'starting'
+    },
+
+    stopping(state): boolean {
+      return state._state === 'stopping'
+    },
+
     statusInfo: (state): StatusInfoType => ({
-      running: state.running,
+      running: state._state === 'running' || state._state === 'starting',
       port: state.port,
       host: state.host,
       config: state.currentConfig || '',
@@ -39,6 +50,19 @@ export const useProxyStore = defineStore('proxy', {
   },
 
   actions: {
+    _transition(newState: ProxyState) {
+      const oldState = this._state
+      this._state = newState
+
+      if (newState === 'stopped') {
+        this._backendConfirmed = false
+        this.uptime = ''
+      }
+      if (newState === 'running') {
+        this._backendConfirmed = true
+      }
+    },
+
     addLog(raw: string) {
       const entry = this.parseLog(raw)
       if (entry) {
@@ -94,58 +118,55 @@ export const useProxyStore = defineStore('proxy', {
     },
 
     async start(configPath: string, port: number): Promise<string | null> {
+      if (this._state === 'running' || this._state === 'starting') {
+        return '代理服务已在运行中'
+      }
+
+      this._transition('starting')
+      this.currentConfig = configPath
+      this.port = port
+      this.uptime = '正在启动...'
+
       try {
         const err = await StartProxyApi(configPath, port)
-        if (err) return err
-        this.running = true
-        this.currentConfig = configPath
-        this.port = port
+        if (err) {
+          this._transition('stopped')
+          return err
+        }
+
+        this._transition('running')
         this.uptime = '刚刚启动'
-        this._starting = true
-        this._startedAt = Date.now()
-        this._consecutiveDownCount = 0
+
+        this._syncFromBackend()
         return null
       } catch (e: any) {
+        this._transition('stopped')
         return e?.message || '启动失败'
       }
     },
 
     async stop(): Promise<string | null> {
+      if (this._state === 'stopped' || this._state === 'stopping') {
+        return '代理服务未运行'
+      }
+
+      this._transition('stopping')
+
       try {
         const err = await StopProxyApi()
+        this._transition('stopped')
         if (err) return err
-        this.running = false
-        this.uptime = ''
-        this._starting = false
-        this._consecutiveDownCount = 0
         return null
       } catch (e: any) {
+        this._transition('stopped')
         return e?.message || '停止失败'
       }
     },
 
-    async getStatus(): Promise<StatusInfoType | null> {
+    async _syncFromBackend() {
       try {
         const status = await GetStatusApi() as StatusInfoType
-        if (!status) return null
-
-        if (status.running) {
-          this.running = true
-          this._starting = false
-          this._consecutiveDownCount = 0
-        } else {
-          if (this._starting) {
-            const elapsed = Date.now() - this._startedAt
-            if (elapsed < this._gracePeriodMs) {
-              this._consecutiveDownCount++
-              if (this._consecutiveDownCount < 3) {
-                return status
-              }
-            }
-          }
-          this.running = false
-          this._starting = false
-        }
+        if (!status) return
 
         this.port = status.port
         this.host = status.host
@@ -153,18 +174,45 @@ export const useProxyStore = defineStore('proxy', {
         this.uptime = status.uptime
         this.model = status.model
         this.provider = status.provider
-        return status
-      } catch {
-        return null
-      }
+
+        if (status.running && !this.running) {
+          this._transition('running')
+        } else if (!status.running && this._backendConfirmed && this._state === 'running') {
+          this._transition('stopped')
+        }
+
+        if (status.running) {
+          this._backendConfirmed = true
+        }
+      } catch {}
+    },
+
+    async getStatus() {
+      await this._syncFromBackend()
+    },
+
+    async fetchLogs(limit: number = 50) {
+      try {
+        const rawLogs = await GetLogsApi(limit)
+        if (rawLogs && Array.isArray(rawLogs)) {
+          for (const line of rawLogs) {
+            if (typeof line === 'string') {
+              this.addLog(line)
+            }
+          }
+        }
+      } catch {}
     },
 
     startPolling(intervalMs: number = 3000) {
       if (this._pollingActive) return
       this._pollingActive = true
-      this.getStatus()
+      this._syncFromBackend()
+      this.fetchLogs()
+
       this._pollingTimer = setInterval(() => {
-        this.getStatus().catch(() => {})
+        this._syncFromBackend()
+        this.fetchLogs()
       }, intervalMs)
     },
 

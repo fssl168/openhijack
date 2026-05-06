@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, computed } from 'vue'
 import { useProxyStore } from '@/stores/proxy'
 import { useConfigStore } from '@/stores/config'
 import { useUIStore } from '@/stores/ui'
@@ -10,20 +10,12 @@ const uiStore = useUIStore()
 
 const port = ref(443)
 const loading = ref(false)
-const recentLogs = ref<string[]>([])
 
-onMounted(async () => {
-  await proxyStore.getStatus()
-  await configStore.loadConfigs()
-  loadRecentLogs()
-})
+const canStart = computed(() => !proxyStore.running && !proxyStore.starting && !proxyStore.stopping && !!configStore.activeConfig)
+const canStop = computed(() => proxyStore.running && !proxyStore.starting && !proxyStore.stopping)
+const isBusy = computed(() => proxyStore.starting || proxyStore.stopping || loading.value)
 
-watch(() => configStore.activeConfig, async (newConfig) => {
-  if (newConfig) {
-    await proxyStore.getStatus()
-    loadRecentLogs()
-  }
-}, { immediate: false })
+const recentLogs = computed(() => proxyStore.logs.slice(-8))
 
 async function handleStart() {
   if (!configStore.activeConfig) {
@@ -53,10 +45,6 @@ async function handleStop() {
     uiStore.showNotification('代理服务已停止', 'info')
   }
 }
-
-function loadRecentLogs() {
-  recentLogs.value = proxyStore.logs.slice(-5).map(l => l.raw)
-}
 </script>
 
 <template>
@@ -67,8 +55,16 @@ function loadRecentLogs() {
           <div class="flex items-center justify-between mb-6">
             <h2 class="text-xl font-semibold">服务状态</h2>
             <span class="status-badge" :class="proxyStore.running ? 'status-running' : 'status-stopped'">
-              <span class="w-2 h-2 rounded-full" :class="proxyStore.running ? 'bg-green-400' : 'bg-red-400'"></span>
-              {{ proxyStore.running ? '运行中' : '已停止' }}
+              <span
+                class="w-2 h-2 rounded-full"
+                :class="{
+                  'bg-green-400 animate-pulse': proxyStore.starting,
+                  'bg-yellow-400 animate-pulse': proxyStore.stopping,
+                  'bg-green-400': proxyStore.running && !proxyStore.starting,
+                  'bg-red-400': !proxyStore.running,
+                }"
+              ></span>
+              {{ proxyStore.starting ? '启动中...' : proxyStore.stopping ? '停止中...' : proxyStore.running ? '运行中' : '已停止' }}
             </span>
           </div>
 
@@ -103,20 +99,41 @@ function loadRecentLogs() {
               />
             </div>
             <button
-              v-if="!proxyStore.running"
+              v-if="canStart"
               @click="handleStart"
-              :disabled="loading"
+              :disabled="isBusy"
               class="btn-success px-8"
             >
               ▶ 启动
             </button>
             <button
-              v-else
+              v-else-if="proxyStore.starting"
+              disabled
+              class="btn-success px-8 opacity-70 cursor-wait"
+            >
+              ⏳ 启动中...
+            </button>
+            <button
+              v-else-if="canStop"
               @click="handleStop"
-              :disabled="loading"
+              :disabled="isBusy"
               class="btn-error px-8"
             >
               ■ 停止
+            </button>
+            <button
+              v-else-if="proxyStore.stopping"
+              disabled
+              class="btn-error px-8 opacity-70 cursor-wait"
+            >
+              ⏳ 停止中...
+            </button>
+            <button
+              v-else
+              disabled
+              class="btn-outline px-8 opacity-50"
+            >
+              等待中...
             </button>
           </div>
         </div>
@@ -152,8 +169,8 @@ function loadRecentLogs() {
                 <span>1.0.0</span>
               </div>
               <div class="flex justify-between">
-                <span class="text-text-muted">架构</span>
-                <span>{{ proxyStore.running ? 'Active' : 'Idle' }}</span>
+                <span class="text-text-muted">状态</span>
+                <span>{{ proxyStore._state }}</span>
               </div>
             </div>
           </div>
@@ -168,11 +185,11 @@ function loadRecentLogs() {
           </button>
         </div>
         <div class="bg-bg-primary rounded-lg p-4 font-mono text-sm max-h-48 overflow-y-auto">
-          <div v-if="proxyStore.logs.length === 0" class="text-text-muted">
+          <div v-if="recentLogs.length === 0" class="text-text-muted">
             暂无日志记录...
           </div>
           <div
-            v-for="(log, i) in proxyStore.logs.slice(-8)"
+            v-for="(log, i) in recentLogs"
             :key="i"
             class="log-line"
             :class="{
