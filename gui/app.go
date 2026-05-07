@@ -6,14 +6,17 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	rt "runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"openhijack/internal/cert"
 	"openhijack/internal/config"
+	"openhijack/internal/hosts"
 	"openhijack/internal/platform"
 	"openhijack/internal/proxy"
 
@@ -60,8 +63,10 @@ type App struct {
 	startTime  time.Time
 	lastConfig string
 	lastPort   int
+	dataDir    string
 	logBuffer  *LogBuffer
 	logChan    chan string
+	cleanupFn  func()
 }
 
 type StatusInfo struct {
@@ -160,8 +165,185 @@ func NewApp() *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 
+	a.logProxy("OpenHijack GUI 启动中...")
+	a.logProxy("操作系统: %s/%s", rt.GOOS, rt.GOARCH)
+	a.logProxy("用户: uid=%d euid=%d", os.Getuid(), os.Geteuid())
+
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+		a.logProxy("SUDO_USER: %s (sudo 模式)", sudoUser)
+	}
+
+	if display := os.Getenv("DISPLAY"); display != "" {
+		a.logProxy("DISPLAY: %s", display)
+	} else {
+		a.logProxy("警告: DISPLAY 环境变量未设置")
+	}
+
+	if xauth := os.Getenv("XAUTHORITY"); xauth != "" {
+		a.logProxy("XAUTHORITY: %s", xauth)
+	}
+
 	go a.processLogStream()
 	go a.detectAutoStart()
+}
+
+func (a *App) RunElevated() error {
+	if !platform.IsPrivileged() {
+		args := []string{"elevate"}
+		args = append(args, os.Args[2:]...)
+
+		env := os.Environ()
+		configDir, err := platform.GetConfigDir()
+		if err == nil {
+			defaultConfigPath := filepath.Join(configDir, "config.toml")
+			env = append(env, fmt.Sprintf("OPENHIJACK_CONFIG=%s", defaultConfigPath))
+		}
+
+		return platform.Elevate(args, env)
+	}
+
+	configSrc := os.Getenv("OPENHIJACK_CONFIG")
+	if configSrc == "" {
+		configDir, err := platform.GetConfigDir()
+		if err != nil {
+			return fmt.Errorf("无法获取配置目录: %w", err)
+		}
+		configSrc = filepath.Join(configDir, "config.toml")
+	}
+
+	if _, err := os.Stat(configSrc); os.IsNotExist(err) {
+		return fmt.Errorf("配置文件不存在: %s\n请先运行 GUI 初始化配置或手动创建配置文件", configSrc)
+	}
+
+	adminConfigDir, err := platform.GetConfigDir()
+	if err != nil {
+		return fmt.Errorf("无法获取管理员配置目录: %w", err)
+	}
+
+	if err := platform.EnsureDir(adminConfigDir, 0700); err != nil {
+		return fmt.Errorf("创建配置目录失败: %w", err)
+	}
+
+	rootConfigFile := filepath.Join(adminConfigDir, "config.toml")
+	srcData, err := os.ReadFile(configSrc)
+	if err != nil {
+		return fmt.Errorf("读取配置文件失败: %w", err)
+	}
+	if err := os.WriteFile(rootConfigFile, srcData, 0600); err != nil {
+		return fmt.Errorf("写入配置文件失败: %w", err)
+	}
+
+	fmt.Printf("✓ Elevate 模式已激活\n")
+	fmt.Printf("  配置文件: %s\n", rootConfigFile)
+	fmt.Printf("  用户权限: root (euid=0)\n")
+	fmt.Printf("  SUDO_USER: %s\n", os.Getenv("SUDO_USER"))
+
+	dataDir, err := platform.GetDataDir()
+	if err != nil {
+		return fmt.Errorf("无法获取数据目录: %w", err)
+	}
+	a.dataDir = dataDir
+	a.lastConfig = rootConfigFile
+
+	fmt.Printf("  数据目录: %s\n", dataDir)
+
+	certMgr := cert.NewCertManager(dataDir)
+
+	if !certMgr.HasCA() {
+		fmt.Println("  正在生成 CA 证书...")
+		if err := certMgr.GenerateCA(func(s string, i ...interface{}) { fmt.Printf("    "+s+"\n", i...) }); err != nil {
+			return fmt.Errorf("生成 CA 证书失败: %w", err)
+		}
+		fmt.Println("    ✓ CA 证书生成成功")
+	}
+
+	if !certMgr.HasServerCert() {
+		fmt.Println("  正在生成服务器证书...")
+		if err := certMgr.GenerateServerCert(func(s string, i ...interface{}) { fmt.Printf("    "+s+"\n", i...) }); err != nil {
+			return fmt.Errorf("生成服务器证书失败: %w", err)
+		}
+		if err := certMgr.GenerateOpenRouterCert(func(s string, i ...interface{}) { fmt.Printf("    "+s+"\n", i...) }); err != nil {
+			return fmt.Errorf("生成 OpenRouter 证书失败: %w", err)
+		}
+		fmt.Println("    ✓ 服务器证书生成成功")
+	}
+
+	fmt.Println("  正在安装 CA 证书到系统...")
+	if err := cert.InstallCACert(certMgr.CACertFile(), func(s string, i ...interface{}) { fmt.Printf("    "+s+"\n", i...) }); err != nil {
+		fmt.Printf("    ⚠ CA 证书安装失败 (非致命): %v\n", err)
+		fmt.Println("    提示: 不安装 CA 证书也能正常使用，只是浏览器会提示不安全")
+	} else {
+		fmt.Println("    ✓ CA 证书安装成功")
+	}
+
+	hostsMgr := hosts.NewHostsManager(dataDir)
+	fmt.Println("  正在修改 hosts 文件...")
+	if err := hostsMgr.AddEntry(func(s string, i ...interface{}) { fmt.Printf("    "+s+"\n", i...) }); err != nil {
+		fmt.Printf("    ⚠ hosts 修改失败 (可忽略): %v\n", err)
+	} else {
+		fmt.Println("    ✓ hosts 文件已更新")
+	}
+
+	tlsCertFile, tlsKeyFile := certMgr.TLSCert()
+
+	dataDirForCleanup := dataDir
+	a.cleanupFn = func() {
+		fmt.Println("\n清理: 移除系统资源...")
+		cleanupHostsMgr := hosts.NewHostsManager(dataDirForCleanup)
+		if err := cleanupHostsMgr.RemoveEntry(func(s string, i ...interface{}) { fmt.Printf("  "+s+"\n", i...) }); err != nil {
+			fmt.Printf("  清理 hosts 失败: %v\n", err)
+		}
+		fmt.Println("  移除系统 CA 信任...")
+		cert.RemoveCACert(func(s string, i ...interface{}) { fmt.Printf("  "+s+"\n", i...) })
+	}
+
+	port := 443
+	for i := 2; i < len(os.Args); i++ {
+		if os.Args[i] == "--port" && i+1 < len(os.Args) {
+			fmt.Sscanf(os.Args[i+1], "%d", &port)
+		}
+	}
+
+	opts := proxy.ServeOptions{
+		ConfigPath:    rootConfigFile,
+		Host:          "0.0.0.0",
+		Port:          port,
+		UseTLS:        true,
+		DebugMode:     false,
+		ForceStream:   false,
+		TLSCertFile:   tlsCertFile,
+		TLSKeyFile:    tlsKeyFile,
+		ExtraTLSCerts: certMgr.ExtraTLSCerts(),
+		CleanupFn:     a.cleanupFn,
+	}
+
+	server, err := proxy.NewProxyServer(opts)
+	if err != nil {
+		return fmt.Errorf("创建代理服务器失败: %w", err)
+	}
+
+	fmt.Printf("\n🚀 启动代理服务 (端口: %d)...\n", port)
+	if err := server.Start(); err != nil {
+		return fmt.Errorf("启动代理服务器失败: %w", err)
+	}
+
+	a.server = server
+	a.running = true
+	a.startTime = time.Now()
+	a.lastPort = port
+
+	fmt.Println("✓ 代理服务已启动并运行")
+	fmt.Println("\n按 Ctrl+C 停止服务...")
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	<-sigChan
+
+	fmt.Println("\n正在停止服务...")
+	a.StopProxy()
+	fmt.Println("✓ 服务已停止")
+
+	return nil
 }
 
 func (a *App) shutdown(ctx context.Context) {
@@ -280,7 +462,8 @@ func (a *App) discoverConfigs() []ConfigInfo {
 func (a *App) getConfigSearchDirs() []string {
 	var dirs []string
 
-	if home, err := os.UserHomeDir(); err == nil {
+	home := a.resolveHomeDir()
+	if home != "" {
 		dirs = append(dirs,
 			filepath.Join(home, ".config", "openhijack"),
 			filepath.Join(home, ".openhijack"),
@@ -372,9 +555,7 @@ func (a *App) StartProxy(configPath string, port int) string {
 
 	if a.server != nil {
 		a.logProxy("检测到残留服务实例，正在清理...")
-		a.server.Stop()
-		a.server = nil
-		a.running = false
+		a.cleanupAndStop()
 	}
 
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
@@ -385,18 +566,23 @@ func (a *App) StartProxy(configPath string, port int) string {
 		return fmt.Sprintf("端口 %d 需要 root 权限，请使用 ≥1024 的端口 (如 8443) 或以 sudo 启动应用", port)
 	}
 
+	effectiveConfigPath := a.prepareConfigForPrivilegedMode(configPath)
+
 	dataDir := a.getDataDir()
 	certMgr := cert.NewCertManager(dataDir)
+	hostsMgr := hosts.NewHostsManager(dataDir)
 
 	var tlsCertFile, tlsKeyFile string
 
 	if !certMgr.HasCA() {
+		a.logProxy("CA 证书不存在，开始生成...")
 		if err := certMgr.GenerateCA(a.logProxy); err != nil {
 			return fmt.Sprintf("生成 CA 证书失败: %v", err)
 		}
 	}
 
 	if !certMgr.HasServerCert() {
+		a.logProxy("服务器证书不存在，开始生成...")
 		if err := certMgr.GenerateServerCert(a.logProxy); err != nil {
 			return fmt.Sprintf("生成服务器证书失败: %v", err)
 		}
@@ -405,21 +591,78 @@ func (a *App) StartProxy(configPath string, port int) string {
 		}
 	}
 
-	if err := cert.InstallCACert(certMgr.CACertFile(), a.logProxy); err != nil {
-		a.logProxy(fmt.Sprintf("安装 CA 证书到系统失败 (可忽略): %v", err))
+	caCertPath := certMgr.CACertFile()
+	a.logProxy("准备安装 CA 证书到系统...")
+	a.logProxy("CA 证书路径: %s", caCertPath)
+	a.logProxy("用户权限信息: uid=%d euid=%d", os.Getuid(), os.Geteuid())
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+		a.logProxy("SUDO_USER: %s (sudo 模式)", sudoUser)
+	}
+
+	if err := cert.InstallCACert(caCertPath, a.logProxy); err != nil {
+		errStr := err.Error()
+		a.logProxy("⚠️ 安装 CA 证书失败: %v", err)
+
+		var solutions []string
+
+		if strings.Contains(errStr, "permission denied") || strings.Contains(errStr, "权限") || strings.Contains(errStr, "denied") || strings.Contains(errStr, "Permission") {
+			solutions = append(solutions,
+				fmt.Sprintf("1. 权限不足：请使用 sudo 启动应用\n   sudo ./scripts/start-gui.sh\n   或运行: sudo %s elevate", os.Args[0]))
+		}
+
+		if strings.Contains(errStr, "not found") || strings.Contains(errStr, "command not found") || strings.Contains(errStr, "No such file") || strings.Contains(errStr, "executable file not found") {
+			solutions = append(solutions,
+				"2. 系统工具缺失：请安装 ca-certificates 包\n"+
+					"   Debian/Ubuntu: sudo apt-get install ca-certificates\n"+
+					"   RHEL/CentOS: sudo yum install ca-certificates\n"+
+					"   Arch Linux: sudo pacman -S ca-certificates")
+		}
+
+		solutions = append(solutions,
+			fmt.Sprintf("3. 手动安装（可选）：\n"+
+				"   sudo cp %s /usr/local/share/ca-certificates/openhijack-ca.crt\n"+
+				"   sudo update-ca-certificates", caCertPath))
+
+		errorMsg := fmt.Sprintf("安装 CA 证书到系统失败: %v\n\n", err)
+		errorMsg += "可能的原因和解决方案：\n"
+		for _, sol := range solutions {
+			errorMsg += fmt.Sprintf("\n%s\n", sol)
+		}
+		errorMsg += "\n注意：即使不安装 CA 证书，代理服务也能正常运行，\n      只是浏览器会提示证书不安全（需要手动信任）。"
+
+		return errorMsg
+	}
+	a.logProxy("✓ CA 证书已成功安装到系统")
+
+	if err := hostsMgr.AddEntry(a.logProxy); err != nil {
+		a.logProxy(fmt.Sprintf("修改 hosts 文件失败 (可忽略): %v", err))
 	}
 
 	tlsCertFile, tlsKeyFile = certMgr.TLSCert()
 
+	dataDirForCleanup := dataDir
+	a.cleanupFn = func() {
+		a.logProxy("清理: 移除 hosts 条目...")
+		cleanupHostsMgr := hosts.NewHostsManager(dataDirForCleanup)
+		if err := cleanupHostsMgr.RemoveEntry(a.logProxy); err != nil {
+			a.logProxy(fmt.Sprintf("清理 hosts 失败: %v", err))
+		}
+
+		a.logProxy("清理: 移除系统 CA 信任...")
+		cert.RemoveCACert(a.logProxy)
+	}
+
 	opts := proxy.ServeOptions{
-		ConfigPath:  configPath,
-		Host:        "0.0.0.0",
-		Port:        port,
-		UseTLS:      true,
-		DebugMode:   false,
-		ForceStream: false,
-		TLSCertFile: tlsCertFile,
-		TLSKeyFile:  tlsKeyFile,
+		ConfigPath:    effectiveConfigPath,
+		Host:          "0.0.0.0",
+		Port:          port,
+		UseTLS:        true,
+		DebugMode:     false,
+		ForceStream:   false,
+		TLSCertFile:   tlsCertFile,
+		TLSKeyFile:    tlsKeyFile,
+		ExtraTLSCerts: certMgr.ExtraTLSCerts(),
+		CleanupFn:     a.cleanupFn,
 	}
 
 	server, err := proxy.NewProxyServer(opts)
@@ -457,11 +700,7 @@ func (a *App) StopProxy() string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if a.server != nil {
-		a.logProxy("正在停止代理服务...")
-		a.server.Stop()
-		a.server = nil
-	}
+	a.cleanupAndStop()
 
 	wasRunning := a.running
 	a.running = false
@@ -471,6 +710,21 @@ func (a *App) StopProxy() string {
 	}
 
 	return ""
+}
+
+func (a *App) cleanupAndStop() {
+	if a.server != nil {
+		a.logProxy("正在停止代理服务...")
+		a.server.Stop()
+		a.server = nil
+	}
+
+	if a.cleanupFn != nil {
+		a.cleanupFn()
+		a.cleanupFn = nil
+	}
+
+	a.running = false
 }
 
 func (a *App) GetLogs(limit int) []string {
@@ -548,6 +802,44 @@ func (a *App) GetSystemInfo() SystemInfo {
 	}
 }
 
+type RuntimeEnv struct {
+	UID        int      `json:"uid"`
+	EUID       int      `json:"euid"`
+	SUDOUser   string   `json:"sudo_user"`
+	DISPLAY    string   `json:"display"`
+	XAUTHORITY string   `json:"xauthority"`
+	HOME       string   `json:"home"`
+	Warnings   []string `json:"warnings"`
+}
+
+func (a *App) GetRuntimeEnv() RuntimeEnv {
+	env := RuntimeEnv{
+		UID:      os.Getuid(),
+		EUID:     os.Geteuid(),
+		SUDOUser: os.Getenv("SUDO_USER"),
+		DISPLAY:  os.Getenv("DISPLAY"),
+		HOME:     a.resolveHomeDir(),
+	}
+
+	if xauth := os.Getenv("XAUTHORITY"); xauth != "" {
+		env.XAUTHORITY = xauth
+	}
+
+	if env.DISPLAY == "" {
+		env.Warnings = append(env.Warnings, "DISPLAY 环境变量未设置，GUI 可能无法正常显示")
+	}
+
+	if env.EUID == 0 && env.SUDOUser == "" {
+		env.Warnings = append(env.Warnings, "以 root 身份运行但未通过 sudo，可能缺少用户环境变量")
+	}
+
+	if rt.GOOS == "linux" && env.EUID == 0 && env.DISPLAY != "" {
+		env.Warnings = append(env.Warnings, "提示: 以 root 运行 GUI 时确保已正确设置 DISPLAY 和 XAUTHORITY")
+	}
+
+	return env
+}
+
 func (a *App) InstallCACert() string {
 	dataDir := a.getDataDir()
 	certMgr := cert.NewCertManager(dataDir)
@@ -569,6 +861,100 @@ func (a *App) InstallCACert() string {
 
 func (a *App) UninstallCACert() string {
 	cert.RemoveCACert(a.logProxy)
+	return ""
+}
+
+func (a *App) GetCertStatus() map[string]interface{} {
+	dataDir := a.getDataDir()
+	certMgr := cert.NewCertManager(dataDir)
+
+	osName := rt.GOOS
+	distro := platform.DetectDistro()
+	caMethod := platform.DetectCAMethod()
+
+	platformLabel := osName
+	if distro != "" {
+		platformLabel = fmt.Sprintf("%s (%s)", distro, osName)
+	}
+
+	return map[string]interface{}{
+		"has_ca":           certMgr.HasCA(),
+		"has_server_cert":  certMgr.HasServerCert(),
+		"ca_dir":           certMgr.CADir(),
+		"ca_cert_file":     certMgr.CACertFile(),
+		"server_cert_file": certMgr.SrvCertFile(),
+		"platform":         osName,
+		"distro":           distro,
+		"platform_label":   platformLabel,
+		"ca_method":        caMethod,
+	}
+}
+
+func (a *App) GenerateCACert() string {
+	dataDir := a.getDataDir()
+	certMgr := cert.NewCertManager(dataDir)
+
+	if err := certMgr.GenerateCA(a.logProxy); err != nil {
+		return fmt.Sprintf("生成 CA 证书失败: %v", err)
+	}
+	return ""
+}
+
+func (a *App) GenerateServerCerts() string {
+	dataDir := a.getDataDir()
+	certMgr := cert.NewCertManager(dataDir)
+
+	if !certMgr.HasCA() {
+		return "CA 证书不存在，请先生成 CA"
+	}
+
+	var errs []string
+	if err := certMgr.GenerateServerCert(a.logProxy); err != nil {
+		errs = append(errs, fmt.Sprintf("服务器证书: %v", err))
+	}
+	if err := certMgr.GenerateOpenRouterCert(a.logProxy); err != nil {
+		errs = append(errs, fmt.Sprintf("OpenRouter证书: %v", err))
+	}
+
+	if len(errs) > 0 {
+		return strings.Join(errs, "; ")
+	}
+	return ""
+}
+
+func (a *App) RegenerateAllCerts() string {
+	dataDir := a.getDataDir()
+	certMgr := cert.NewCertManager(dataDir)
+
+	a.logProxy("正在删除旧证书...")
+	if err := certMgr.RemoveLocalArtifacts(a.logProxy); err != nil {
+		return fmt.Sprintf("删除旧证书失败: %v", err)
+	}
+
+	a.logProxy("正在生成新 CA 证书...")
+	if err := certMgr.GenerateCA(a.logProxy); err != nil {
+		return fmt.Sprintf("生成 CA 证书失败: %v", err)
+	}
+
+	a.logProxy("正在生成服务器证书...")
+	if err := certMgr.GenerateServerCert(a.logProxy); err != nil {
+		return fmt.Sprintf("生成服务器证书失败: %v", err)
+	}
+	if err := certMgr.GenerateOpenRouterCert(a.logProxy); err != nil {
+		return fmt.Sprintf("生成 OpenRouter 证书失败: %v", err)
+	}
+
+	a.logProxy("所有证书重新生成完成")
+	return ""
+}
+
+func (a *App) RemoveLocalCerts() string {
+	dataDir := a.getDataDir()
+	certMgr := cert.NewCertManager(dataDir)
+
+	if err := certMgr.RemoveLocalArtifacts(a.logProxy); err != nil {
+		return fmt.Sprintf("删除本地证书失败: %v", err)
+	}
 	return ""
 }
 
@@ -642,17 +1028,84 @@ func (a *App) resolveConfigPath(path string) string {
 }
 
 func (a *App) getConfigDir() string {
-	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".config", "openhijack")
+	home := a.resolveHomeDir()
+	if home == "" {
+		return ".openhijack"
 	}
-	return ".openhijack"
+	return filepath.Join(home, ".config", "openhijack")
 }
 
 func (a *App) getDataDir() string {
-	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".local", "share", "openhijack")
+	dataDir, err := platform.GetDataDir()
+	if err != nil {
+		return ".openhijack"
 	}
-	return ".openhijack"
+	return dataDir
+}
+
+func (a *App) prepareConfigForPrivilegedMode(originalPath string) string {
+	if !platform.IsPrivileged() {
+		return originalPath
+	}
+
+	adminConfigDir, err := platform.GetConfigDir()
+	if err != nil {
+		a.logProxy("警告: 无法获取管理员配置目录: %v", err)
+		return originalPath
+	}
+
+	if strings.HasPrefix(filepath.Clean(originalPath), filepath.Clean(adminConfigDir)) {
+		a.logProxy("配置已在管理员目录中: %s", originalPath)
+		return originalPath
+	}
+
+	a.logProxy("检测到特权模式，正在复制配置文件...")
+	a.logProxy("原始配置路径: %s", originalPath)
+	a.logProxy("用户权限信息: uid=%d euid=%d", os.Getuid(), os.Geteuid())
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+		a.logProxy("SUDO_USER: %s", sudoUser)
+	}
+
+	if err := platform.EnsureDir(adminConfigDir, 0700); err != nil {
+		a.logProxy("错误: 创建管理员配置目录失败: %v", err)
+		return originalPath
+	}
+
+	rootConfigFile := filepath.Join(adminConfigDir, "config.toml")
+
+	srcData, err := os.ReadFile(originalPath)
+	if err != nil {
+		a.logProxy("错误: 读取原始配置文件失败: %v", err)
+		return originalPath
+	}
+
+	if err := os.WriteFile(rootConfigFile, srcData, 0600); err != nil {
+		a.logProxy("错误: 写入管理员配置文件失败: %v", err)
+		return originalPath
+	}
+
+	a.logProxy("✓ 配置文件已复制到管理员目录")
+	a.logProxy("  原始位置: %s", originalPath)
+	a.logProxy("  新位置:   %s", rootConfigFile)
+	a.lastConfig = rootConfigFile
+
+	return rootConfigFile
+}
+
+func (a *App) resolveHomeDir() string {
+	var euid int
+	if platform.IsPrivileged() {
+		euid = 0
+	} else {
+		euid = -1
+	}
+
+	sudoUser := os.Getenv("SUDO_USER")
+	home, err := platform.ResolveHomeDir(euid, sudoUser)
+	if err != nil {
+		return ""
+	}
+	return home
 }
 
 type ProviderInfo struct {
@@ -912,4 +1365,35 @@ func (a *App) LoadConfigFile(filePath string) string {
 	}
 
 	return string(data)
+}
+
+func (a *App) LoadFullConfig(filePath string) ConfigData {
+	if filePath == "" {
+		return ConfigData{}
+	}
+
+	cfg, err := config.Load(filePath)
+	if err != nil {
+		a.logProxy("加载配置失败: %v", err)
+		return ConfigData{Path: filePath}
+	}
+
+	groups := make([]ConfigGroupData, 0, len(cfg.ConfigGroups))
+	for _, g := range cfg.ConfigGroups {
+		groups = append(groups, ConfigGroupData{
+			Name:        g.Name,
+			Provider:    g.Provider,
+			APIURL:      g.APIURL,
+			ModelID:     g.ModelID,
+			APIKey:      g.APIKey,
+			MiddleRoute: g.MiddleRoute,
+		})
+	}
+
+	return ConfigData{
+		Path:          filePath,
+		MappedModelID: cfg.MappedModelID,
+		AuthKey:       cfg.AuthKey,
+		ConfigGroups:  groups,
+	}
 }

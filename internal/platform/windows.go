@@ -97,6 +97,14 @@ func (p *WindowsPlatform) Elevate(args []string, env []string) error {
 	return nil
 }
 
+func (p *WindowsPlatform) DetectDistro() string {
+	return "windows"
+}
+
+func (p *WindowsPlatform) DetectCAMethod() string {
+	return "certutil"
+}
+
 func (p *WindowsPlatform) ExecReplace(bin string, args []string, env []string) error {
 	cmd := exec.Command(bin, args...)
 	cmd.Stdin = os.Stdin

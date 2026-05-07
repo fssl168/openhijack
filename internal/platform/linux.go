@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 )
 
@@ -54,4 +55,56 @@ func (p *LinuxPlatform) Elevate(args []string, env []string) error {
 
 func (p *LinuxPlatform) ExecReplace(bin string, args []string, env []string) error {
 	return syscall.Exec(bin, args, env)
+}
+
+func (p *LinuxPlatform) DetectDistro() string {
+	if data, err := os.ReadFile("/etc/os-release"); err == nil {
+		for _, line := range splitLines(string(data)) {
+			if strings.HasPrefix(line, "ID=") {
+				return trimQuote(strings.TrimPrefix(line, "ID="))
+			}
+		}
+	}
+
+	if _, err := os.Stat("/etc/debian_version"); err == nil {
+		return "debian"
+	}
+	if _, err := os.Stat("/etc/redhat-release"); err == nil {
+		return "rhel"
+	}
+	if _, err := os.Stat("/etc/arch-release"); err == nil {
+		return "arch"
+	}
+	if _, err := os.Stat("/etc/alpine-release"); err == nil {
+		return "alpine"
+	}
+	if _, err := os.Stat("/etc/suse-release"); err == nil {
+		return "opensuse"
+	}
+	return "unknown"
+}
+
+func (p *LinuxPlatform) DetectCAMethod() string {
+	methods := []struct {
+		cmd  string
+		name string
+	}{
+		{"update-ca-certificates", "debian"},
+		{"update-ca-trust", "rhel"},
+		{"trust", "arch"},
+	}
+	for _, m := range methods {
+		if _, err := exec.LookPath(m.cmd); err == nil {
+			return m.name
+		}
+	}
+	return ""
+}
+
+func splitLines(s string) []string {
+	return strings.Split(s, "\n")
+}
+
+func trimQuote(s string) string {
+	return strings.Trim(s, "\"'")
 }

@@ -79,8 +79,7 @@ export const useConfigStore = defineStore('config', {
 
     async setActiveConfig(path: string): Promise<string | null> {
       try {
-        const err = await SelectConfigApi(path)
-        if (err) return err
+        await SelectConfigApi(path)
         this.activeConfig = path
         await this.loadConfigs()
         return null

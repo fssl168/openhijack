@@ -55,3 +55,11 @@ func (p *DarwinPlatform) Elevate(args []string, env []string) error {
 func (p *DarwinPlatform) ExecReplace(bin string, args []string, env []string) error {
 	return syscall.Exec(bin, args, env)
 }
+
+func (p *DarwinPlatform) DetectDistro() string {
+	return "macos"
+}
+
+func (p *DarwinPlatform) DetectCAMethod() string {
+	return "security"
+}

@@ -14,6 +14,18 @@ export function ExportConfig(arg1) {
   return window['go']['main']['App']['ExportConfig'](arg1);
 }
 
+export function GenerateCACert() {
+  return window['go']['main']['App']['GenerateCACert']();
+}
+
+export function GenerateServerCerts() {
+  return window['go']['main']['App']['GenerateServerCerts']();
+}
+
+export function GetCertStatus() {
+  return window['go']['main']['App']['GetCertStatus']();
+}
+
 export function GetConfigs() {
   return window['go']['main']['App']['GetConfigs']();
 }
@@ -24,6 +36,10 @@ export function GetLogs(arg1) {
 
 export function GetProviderDefaults(arg1) {
   return window['go']['main']['App']['GetProviderDefaults'](arg1);
+}
+
+export function GetRuntimeEnv() {
+  return window['go']['main']['App']['GetRuntimeEnv']();
 }
 
 export function GetStatus() {
@@ -58,12 +74,28 @@ export function LoadConfigFile(arg1) {
   return window['go']['main']['App']['LoadConfigFile'](arg1);
 }
 
+export function LoadFullConfig(arg1) {
+  return window['go']['main']['App']['LoadFullConfig'](arg1);
+}
+
 export function OpenDirectoryDialog() {
   return window['go']['main']['App']['OpenDirectoryDialog']();
 }
 
 export function OpenFileDialog() {
   return window['go']['main']['App']['OpenFileDialog']();
+}
+
+export function RegenerateAllCerts() {
+  return window['go']['main']['App']['RegenerateAllCerts']();
+}
+
+export function RemoveLocalCerts() {
+  return window['go']['main']['App']['RemoveLocalCerts']();
+}
+
+export function RunElevated() {
+  return window['go']['main']['App']['RunElevated']();
 }
 
 export function SelectConfig(arg1) {

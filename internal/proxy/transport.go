@@ -8,13 +8,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
 	"time"
 
 	"openhijack/internal/config"
+	"openhijack/internal/errors"
 )
 
 type UpstreamTransport struct {
@@ -23,10 +24,10 @@ type UpstreamTransport struct {
 	config    *config.Config
 	promptSt  *SystemPromptStore
 	debugMode bool
-	logger    *log.Logger
+	logger    *slog.Logger
 }
 
-func NewUpstreamTransport(cfg *config.Config, debugMode bool, disableSSLStrict bool, logger *log.Logger) *UpstreamTransport {
+func NewUpstreamTransport(cfg *config.Config, debugMode bool, disableSSLStrict bool, logger *slog.Logger) *UpstreamTransport {
 	group := cfg.CurrentGroup()
 
 	transport := &http.Transport{
@@ -73,7 +74,7 @@ func (t *UpstreamTransport) ForwardChatCompletions(ctx context.Context, requestI
 
 	var reqData map[string]interface{}
 	if err := json.Unmarshal(body, &reqData); err != nil {
-		return nil, fmt.Errorf("解析请求 JSON 失败: %w", err)
+		return nil, errors.Wrap(err, errors.ErrInvalidFormatValue, "failed to parse request JSON")
 	}
 
 	targetModel := t.config.TargetModelID()
@@ -81,7 +82,7 @@ func (t *UpstreamTransport) ForwardChatCompletions(ctx context.Context, requestI
 
 	if t.debugMode {
 		reqJSON, _ := json.MarshalIndent(reqData, "", "  ")
-		t.logger.Printf("[%s] 上游请求体 (调试):\n%s", requestID, string(reqJSON))
+		t.logger.Debug("upstream request body", "requestID", requestID, "body", string(reqJSON))
 	}
 
 	t.applySystemPromptOverrides(requestID, reqData)
@@ -92,15 +93,15 @@ func (t *UpstreamTransport) ForwardChatCompletions(ctx context.Context, requestI
 
 	modifiedBody, err := json.Marshal(reqData)
 	if err != nil {
-		return nil, fmt.Errorf("序列化请求失败: %w", err)
+		return nil, errors.Wrap(err, errors.ErrInternalError, "failed to serialize request")
 	}
 
 	upstreamURL := t.buildUpstreamURL()
-	t.logger.Printf("[%s] 转发到上游: %s (model=%s, stream=%v)", requestID, upstreamURL, targetModel, isStream)
+	t.logger.Info("forwarding to upstream", "requestID", requestID, "url", upstreamURL, "model", targetModel, "stream", isStream)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", upstreamURL, bytes.NewReader(modifiedBody))
 	if err != nil {
-		return nil, fmt.Errorf("创建上游请求失败: %w", err)
+		return nil, errors.Wrap(err, errors.ErrNetworkConnectionFailed, "failed to create upstream request")
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -110,20 +111,20 @@ func (t *UpstreamTransport) ForwardChatCompletions(ctx context.Context, requestI
 
 	for key, value := range t.group.Headers {
 		req.Header.Set(key, value)
-		t.logger.Printf("[%s] 应用自定义请求头: %s: %s", requestID, key, value)
+		t.logger.Debug("applied custom header", "requestID", requestID, "key", key, "value", value)
 	}
 
 	if isStream {
 		req.Header.Set("Accept", "text/event-stream")
 	}
 
-	t.logger.Printf("[%s] === 发送到上游的完整请求头 ===", requestID)
-	for k, v := range req.Header {
-		t.logger.Printf("[%s]   %s: %s", requestID, k, strings.Join(v, ", "))
-	}
-	t.logger.Printf("[%s] ==================================", requestID)
+	t.logger.Debug("request headers", "requestID", requestID, "headers", req.Header)
 
-	return t.client.Do(req)
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return nil, errors.Wrap(err, errors.ErrNetworkConnectionFailed, "upstream request failed")
+	}
+	return resp, nil
 }
 
 func (t *UpstreamTransport) applySystemPromptOverrides(requestID string, reqData map[string]interface{}) {
@@ -159,7 +160,7 @@ func (t *UpstreamTransport) applySystemPromptOverrides(requestID string, reqData
 
 	added, overrides := t.promptSt.CaptureAndGetOverrides(entries)
 	for _, h := range added {
-		t.logger.Printf("[%s] 📝 收录系统提示词 hash=%s", requestID, h[:12])
+		t.logger.Info("captured system prompt", "requestID", requestID, "hash", h[:12])
 	}
 
 	if len(overrides) == 0 {
@@ -181,7 +182,7 @@ func (t *UpstreamTransport) applySystemPromptOverrides(requestID string, reqData
 		}
 		changed = true
 		if override == "" {
-			t.logger.Printf("[%s] 🧹 清空系统提示词 hash=%s", requestID, h[:12])
+			t.logger.Info("cleared system prompt", "requestID", requestID, "hash", h[:12])
 			continue
 		}
 		msgMap, _ := msg.(map[string]interface{})
@@ -191,7 +192,7 @@ func (t *UpstreamTransport) applySystemPromptOverrides(requestID string, reqData
 		}
 		replaced["content"] = override
 		newMessages = append(newMessages, replaced)
-		t.logger.Printf("[%s] ✏️ 应用系统提示词覆盖 hash=%s", requestID, h[:12])
+		t.logger.Info("applied system prompt override", "requestID", requestID, "hash", h[:12])
 	}
 
 	if changed {
@@ -261,10 +262,10 @@ func StreamSSE(resp *http.Response, w http.ResponseWriter, done chan struct{}) {
 	}
 }
 
-func StreamNonStreamAsSSE(respBody []byte, w http.ResponseWriter, logger *log.Logger) {
+func StreamNonStreamAsSSE(respBody []byte, w http.ResponseWriter, logger *slog.Logger) {
 	var respData map[string]interface{}
 	if err := json.Unmarshal(respBody, &respData); err != nil {
-		logger.Printf("解析非流式响应失败: %v", err)
+		logger.Error("failed to parse non-stream response", "error", err)
 		w.Write(respBody)
 		return
 	}

@@ -2,9 +2,10 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -17,18 +18,19 @@ import (
 )
 
 type ProxyServer struct {
-	config      *config.Config
-	auth        *ProxyAuth
-	transport   *UpstreamTransport
-	logger      *log.Logger
-	server      *http.Server
-	listenHost  string
-	listenPort  int
-	debugMode   bool
-	useTLS      bool
-	tlsCertFile string
-	tlsKeyFile  string
-	cleanupFn   func()
+	config       *config.Config
+	auth         *ProxyAuth
+	transport    *UpstreamTransport
+	logger       *slog.Logger
+	server       *http.Server
+	listenHost   string
+	listenPort   int
+	debugMode    bool
+	useTLS       bool
+	tlsCertFile  string
+	tlsKeyFile   string
+	tlsCerts     map[string]*tls.Certificate
+	cleanupFn    func()
 }
 
 const openAIDefaultRoutePrefix = "/v1"
@@ -44,6 +46,7 @@ type ServeOptions struct {
 	StreamMode       string
 	TLSCertFile      string
 	TLSKeyFile       string
+	ExtraTLSCerts    map[string]string
 	CleanupFn        func()
 }
 
@@ -53,21 +56,31 @@ func NewProxyServer(opts ServeOptions) (*ProxyServer, error) {
 		return nil, err
 	}
 
-	logger := log.New(os.Stderr, "[openhijack] ", log.LstdFlags|log.Lmicroseconds)
-	logger.Printf("配置加载成功: mapped_model_id=%s, 当前组=%s", cfg.MappedModelID, cfg.CurrentGroup().Name)
-
-	group := cfg.CurrentGroup()
-	logger.Printf("上游配置: provider=%s, api_url=%s, model_id=%s", group.Provider, group.APIURL, group.ModelID)
-	if len(group.Headers) > 0 {
-		for k, v := range group.Headers {
-			logger.Printf("自定义请求头: %s: %s", k, v)
-		}
-	} else {
-		logger.Printf("自定义请求头: 无")
-	}
+	logger := slog.Default()
 
 	auth := NewProxyAuth(cfg.AuthKey)
 	transport := NewUpstreamTransport(cfg, opts.DebugMode, opts.DisableSSLStrict, logger)
+
+	tlsCerts := make(map[string]*tls.Certificate)
+	if opts.UseTLS && opts.TLSCertFile != "" && opts.TLSKeyFile != "" {
+		defaultCert, err := tls.LoadX509KeyPair(opts.TLSCertFile, opts.TLSKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("加载默认 TLS 证书失败: %w", err)
+		}
+		tlsCerts[""] = &defaultCert
+
+		for domain, certPrefix := range opts.ExtraTLSCerts {
+			certFile := certPrefix + ".crt"
+			keyFile := certPrefix + ".key"
+			extraCert, err := tls.LoadX509KeyPair(certFile, keyFile)
+			if err != nil {
+				logger.Warn("加载额外 TLS 证书失败，跳过", "domain", domain, "err", err)
+				continue
+			}
+			tlsCerts[domain] = &extraCert
+			logger.Info("加载额外 TLS 证书", "domain", domain)
+		}
+	}
 
 	return &ProxyServer{
 		config:      cfg,
@@ -80,6 +93,7 @@ func NewProxyServer(opts ServeOptions) (*ProxyServer, error) {
 		useTLS:      opts.UseTLS,
 		tlsCertFile: opts.TLSCertFile,
 		tlsKeyFile:  opts.TLSKeyFile,
+		tlsCerts:    tlsCerts,
 		cleanupFn:   opts.CleanupFn,
 	}, nil
 }
@@ -94,7 +108,7 @@ func (s *ProxyServer) timestampMs() string {
 }
 
 func (s *ProxyServer) logRequest(requestID, message string) {
-	s.logger.Printf("%s [%s] %s", s.timestampMs(), requestID, message)
+	s.logger.Info("request", "time", s.timestampMs(), "id", requestID, "msg", message)
 }
 
 func buildDefaultOpenAIRoute(suffix string) string {
@@ -135,7 +149,7 @@ func (s *ProxyServer) routeVariants(suffix string) []string {
 }
 
 func (s *ProxyServer) authorizeRequest(w http.ResponseWriter, r *http.Request, requestID string, logScope string) bool {
-	if s.auth.Verify(r.Header.Get("Authorization")) {
+	if err := s.auth.Verify(r.Header.Get("Authorization"), r.RemoteAddr); err == nil {
 		return true
 	}
 
@@ -248,6 +262,7 @@ func (s *ProxyServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		WriteOpenAIError(w, http.StatusBadGateway, fmt.Sprintf("Upstream request failed: %v", err), "upstream_error")
 		return
 	}
+	defer upstreamResp.Body.Close()
 
 	s.logRequest(requestID, fmt.Sprintf("上游响应状态: %d", upstreamResp.StatusCode))
 
@@ -379,8 +394,7 @@ func (s *ProxyServer) setupRoutes() http.Handler {
 	modelsRoutes := s.routeVariants("models")
 	chatRoutes := s.routeVariants("chat/completions")
 
-	s.logger.Printf("注册模型路由: GET %s", strings.Join(modelsRoutes, ", "))
-	s.logger.Printf("注册对话路由: POST %s", strings.Join(chatRoutes, ", "))
+	s.logger.Info("registering routes", "models", modelsRoutes, "chat", chatRoutes)
 
 	for _, route := range modelsRoutes {
 		route := route
@@ -426,24 +440,43 @@ func (s *ProxyServer) Start() error {
 	}
 
 	if s.useTLS && s.tlsCertFile != "" && s.tlsKeyFile != "" {
-		s.logger.Printf("代理服务器启动: %s (HTTPS/TLS 模式)", addr)
+		s.logger.Info("server starting", "addr", addr, "mode", "HTTPS/TLS")
+		s.logger.Info("TLS config", "cert", s.tlsCertFile, "key", s.tlsKeyFile)
+
+		defaultCert := s.tlsCerts[""]
+
+		tlsConfig := &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			MaxVersion: tls.VersionTLS13,
+			GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+				if hello.ServerName != "" {
+					if cert, ok := s.tlsCerts[hello.ServerName]; ok {
+						s.logger.Debug("TLS SNI certificate selected", "server_name", hello.ServerName)
+						return cert, nil
+					}
+				}
+				return defaultCert, nil
+			},
+		}
+
+		tlsLn := tls.NewListener(ln, tlsConfig)
+
 		go func() {
-			if err := s.server.ServeTLS(ln, s.tlsCertFile, s.tlsKeyFile); err != nil && err != http.ErrServerClosed {
-				s.logger.Printf("服务器错误: %v", err)
+			if err := s.server.Serve(tlsLn); err != nil && err != http.ErrServerClosed {
+				s.logger.Error("server error", "err", err)
 			}
 		}()
 	} else {
-		s.logger.Printf("代理服务器启动: %s (HTTP 模式)", addr)
+		s.logger.Info("server starting", "addr", addr, "mode", "HTTP")
 		go func() {
 			if err := s.server.Serve(ln); err != nil && err != http.ErrServerClosed {
-				s.logger.Printf("服务器错误: %v", err)
+				s.logger.Error("server error", "err", err)
 			}
 		}()
 	}
 
-	s.logger.Printf("代理服务器已启动: %s", addr)
-	s.logger.Printf("模型映射: %s -> %s", s.config.MappedModelID, s.config.TargetModelID())
-	s.logger.Printf("上游地址: %s", s.config.CurrentGroup().FullAPIURL("chat/completions"))
+	s.logger.Info("server started", "addr", addr, "mapped_model", s.config.MappedModelID, "target_model", s.config.TargetModelID())
+	s.logger.Info("upstream URL", "url", s.config.CurrentGroup().FullAPIURL("chat/completions"))
 
 	return nil
 }
@@ -461,7 +494,7 @@ func (s *ProxyServer) Wait() {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-stop
-	s.logger.Printf("收到信号 %v，正在关闭...", sig)
+	s.logger.Info("received shutdown signal", "signal", sig.String())
 	s.Stop()
 	if s.cleanupFn != nil {
 		s.cleanupFn()

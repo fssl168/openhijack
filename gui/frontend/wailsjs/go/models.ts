@@ -121,6 +121,30 @@ export namespace main {
 	        this.api_key_hint = source["api_key_hint"];
 	    }
 	}
+	export class RuntimeEnv {
+	    uid: number;
+	    euid: number;
+	    sudo_user: string;
+	    display: string;
+	    xauthority: string;
+	    home: string;
+	    warnings: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new RuntimeEnv(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.uid = source["uid"];
+	        this.euid = source["euid"];
+	        this.sudo_user = source["sudo_user"];
+	        this.display = source["display"];
+	        this.xauthority = source["xauthority"];
+	        this.home = source["home"];
+	        this.warnings = source["warnings"];
+	    }
+	}
 	export class StatusInfo {
 	    running: boolean;
 	    port: number;

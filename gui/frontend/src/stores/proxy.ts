@@ -1,8 +1,19 @@
 import { defineStore } from 'pinia'
 import { StartProxy as StartProxyApi, StopProxy as StopProxyApi, GetStatus as GetStatusApi, GetLogs as GetLogsApi } from '@/utils/runtime'
-import type { StatusInfo as StatusInfoType, LogEntry, LogLevel } from '@/types'
+import type { StatusInfo, LogEntry, LogLevel } from '@/types'
 
 type ProxyState = 'stopped' | 'starting' | 'running' | 'stopping'
+
+// 轮询配置
+const POLLING_CONFIG = {
+  baseInterval: 3000,        // 基础轮询间隔（毫秒）
+  minInterval: 1000,         // 最小间隔
+  maxInterval: 30000,        // 最大间隔（30秒）
+  backoffFactor: 1.5,        // 退避倍数
+  activeMultiplier: 0.5,     // 运行状态时的加速因子（更频繁）
+  initialDelay: 100,         // 初始延迟
+  maxConsecutiveNoChange: 3, // 连续无变化次数后开始退避
+}
 
 export const useProxyStore = defineStore('proxy', {
   state: () => ({
@@ -19,6 +30,12 @@ export const useProxyStore = defineStore('proxy', {
     _pollingActive: false as boolean,
     _crashDetected: false as boolean,
     _consecutiveDownCount: 0 as number,
+    
+    // 新增：智能轮询状态
+    _currentInterval: POLLING_CONFIG.baseInterval,
+    _consecutiveNoChangeCount: 0,
+    _lastStatusHash: '' as string,
+    _lastLogCount: 0,
   }),
 
   getters: {
@@ -34,7 +51,7 @@ export const useProxyStore = defineStore('proxy', {
       return state._state === 'stopping'
     },
 
-    statusInfo: (state): StatusInfoType => ({
+    statusInfo: (state): StatusInfo => ({
       running: state._state === 'running' || state._state === 'starting',
       port: state.port,
       host: state.host,
@@ -148,7 +165,7 @@ export const useProxyStore = defineStore('proxy', {
 
     async _syncMetaFromBackend() {
       try {
-        const status = await GetStatusApi() as StatusInfoType
+        const status = await GetStatusApi() as StatusInfo
         if (!status) return
 
         this.port = status.port
@@ -158,11 +175,15 @@ export const useProxyStore = defineStore('proxy', {
         this.model = status.model
         this.provider = status.provider
 
+        // 更新状态哈希（用于变化检测）
+        this._lastStatusHash = this._computeStatusHash()
+        this._lastLogCount = this.logs.length
+
         this._checkCrash(status)
       } catch {}
     },
 
-    _checkCrash(status: StatusInfoType) {
+    _checkCrash(status: StatusInfo) {
       if (this._state !== 'running' && this._state !== 'starting') return
 
       if (!status.running) {
@@ -195,20 +216,130 @@ export const useProxyStore = defineStore('proxy', {
       } catch {}
     },
 
-    startPolling(intervalMs: number = 3000) {
+    startPolling(intervalMs: number = POLLING_CONFIG.baseInterval) {
       if (this._pollingActive) return
       this._pollingActive = true
-      this._syncMetaFromBackend()
-      this.fetchLogs()
+      this._currentInterval = intervalMs
+      this._consecutiveNoChangeCount = 0
+
+      // 初始延迟后立即执行一次
+      setTimeout(() => {
+        this._performPollingCycle()
+      }, POLLING_CONFIG.initialDelay)
+
+      // 启动智能轮询循环
+      this._startSmartPolling()
+    },
+
+    _startSmartPolling() {
+      if (this._pollingTimer) {
+        clearInterval(this._pollingTimer)
+      }
 
       this._pollingTimer = setInterval(() => {
-        this._syncMetaFromBackend()
-        this.fetchLogs()
-      }, intervalMs)
+        this._performPollingCycle()
+      }, this._currentInterval)
+    },
+
+    async _performPollingCycle() {
+      if (!this._pollingActive) return
+
+      const prevStatusHash = this._lastStatusHash
+      const prevLogCount = this._lastLogCount
+
+      try {
+        // 执行数据获取
+        await this._syncMetaFromBackend()
+        await this.fetchLogs()
+
+        // 检测是否有变化
+        const hasStatusChanged = this._lastStatusHash !== prevStatusHash
+        const hasNewLogs = this.logs.length > prevLogCount
+        const hasAnyChange = hasStatusChanged || hasNewLogs
+
+        // 根据变化调整轮询间隔
+        this._adjustPollingInterval(hasAnyChange)
+
+      } catch (error) {
+        console.warn('[ProxyStore] Polling cycle error:', error)
+        
+        // 错误时增加间隔（退避）
+        this._increaseInterval()
+      }
+    },
+
+    _adjustPollingInterval(hasChange: boolean) {
+      if (hasChange) {
+        // 有变化：重置计数器，加速轮询
+        this._consecutiveNoChangeCount = 0
+        
+        // 如果服务正在运行，使用更快的频率
+        if (this.running) {
+          this._currentInterval = Math.max(
+            POLLING_CONFIG.minInterval,
+            Math.floor(POLLING_CONFIG.baseInterval * POLLING_CONFIG.activeMultiplier)
+          )
+        } else {
+          this._currentInterval = POLLING_CONFIG.baseInterval
+        }
+      } else {
+        // 无变化：增加计数器
+        this._consecutiveNoChangeCount++
+        
+        if (this._consecutiveNoChangeCount >= POLLING_CONFIG.maxConsecutiveNoChange) {
+          // 达到阈值，开始指数退避
+          this._increaseInterval()
+        }
+      }
+
+      // 如果间隔发生变化，重启定时器
+      this._restartPollingIfNeeded()
+    },
+
+    _increaseInterval() {
+      const newInterval = Math.floor(
+        this._currentInterval * POLLING_CONFIG.backoffFactor
+      )
+      
+      this._currentInterval = Math.min(
+        newInterval,
+        POLLING_CONFIG.maxInterval
+      )
+      
+      console.debug(`[ProxyStore] Backoff: interval=${this._currentInterval}ms`)
+    },
+
+    _resetInterval() {
+      this._currentInterval = POLLING_CONFIG.baseInterval
+      this._consecutiveNoChangeCount = 0
+    },
+
+    _computeStatusHash(): string {
+      return JSON.stringify({
+        state: this._state,
+        port: this.port,
+        uptime: this.uptime,
+        model: this.model,
+        provider: this.provider,
+      })
+    },
+
+    _restartPollingIfNeeded() {
+      // 仅当间隔变化较大时才重启（避免频繁重启）
+      const currentTimerInterval = this._pollingTimer ? 
+        // 无法直接获取 setInterval 的间隔，所以通过比较判断
+        this._currentInterval : 
+        0
+      
+      if (Math.abs(currentTimerInterval - this._currentInterval) > 500) {
+        this._startSmartPolling()
+      }
     },
 
     stopPolling() {
       this._pollingActive = false
+      this._resetInterval()
+      
       if (this._pollingTimer) {
         clearInterval(this._pollingTimer)
         this._pollingTimer = null

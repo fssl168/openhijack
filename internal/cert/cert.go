@@ -274,6 +274,12 @@ func (cm *CertManager) TLSCert() (tlsCertFile, tlsKeyFile string) {
 	return cm.SrvCertFile(), cm.SrvKeyFile()
 }
 
+func (cm *CertManager) ExtraTLSCerts() map[string]string {
+	return map[string]string{
+		OpenRouterDomain: filepath.Join(cm.caDir, OpenRouterDomain),
+	}
+}
+
 func (cm *CertManager) RemoveLocalArtifacts(logf func(string, ...interface{})) error {
 	paths := []string{
 		cm.SrvCertFile(),

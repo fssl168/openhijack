@@ -1,5 +1,6 @@
 /openhijack
 /.codex
+cmd/openhijack/openhijack
 
 # Go build and test artifacts
 *.exe
@@ -20,3 +21,7 @@ gui/frontend/node_modules/
 .DS_Store
 .idea/
 .vscode/
+
+# Python virtual environments (not used in this Go project)
+.venv/
+venv/

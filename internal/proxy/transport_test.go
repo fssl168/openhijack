@@ -3,7 +3,7 @@ package proxy
 import (
 	"context"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -31,7 +31,7 @@ func testTransportConfig() *config.Config {
 }
 
 func TestNewUpstreamTransportDisablesTLSVerificationWhenRequested(t *testing.T) {
-	transport := NewUpstreamTransport(testTransportConfig(), false, true, log.New(io.Discard, "", 0))
+	transport := NewUpstreamTransport(testTransportConfig(), false, true, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	httpTransport, ok := transport.client.Transport.(*http.Transport)
 	if !ok {
@@ -43,7 +43,7 @@ func TestNewUpstreamTransportDisablesTLSVerificationWhenRequested(t *testing.T) 
 }
 
 func TestForwardChatCompletionsUsesRequestContext(t *testing.T) {
-	transport := NewUpstreamTransport(testTransportConfig(), false, false, log.New(io.Discard, "", 0))
+	transport := NewUpstreamTransport(testTransportConfig(), false, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	type contextKey string
 	const key contextKey = "request-id"

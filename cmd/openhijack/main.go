@@ -282,6 +282,12 @@ func runServe(configPath string, host string, port int, debug bool, disableSSLSt
 		tlsCertFile, tlsKeyFile = certMgr.TLSCert()
 	}
 
+	var extraTLSCerts map[string]string
+	if useTLS {
+		certMgr := cert.NewCertManager(dataDir)
+		extraTLSCerts = certMgr.ExtraTLSCerts()
+	}
+
 	opts := proxy.ServeOptions{
 		ConfigPath:       configPath,
 		Host:             host,
@@ -292,6 +298,7 @@ func runServe(configPath string, host string, port int, debug bool, disableSSLSt
 		ForceStream:      forceStream,
 		TLSCertFile:      tlsCertFile,
 		TLSKeyFile:       tlsKeyFile,
+		ExtraTLSCerts:    extraTLSCerts,
 		CleanupFn:        cleanupFn,
 	}
 

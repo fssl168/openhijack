@@ -14,6 +14,8 @@ type Platform interface {
 	GetDataDir(homeDir string) string
 	Elevate(args []string, env []string) error
 	ExecReplace(bin string, args []string, env []string) error
+	DetectDistro() string
+	DetectCAMethod() string
 }
 
 var currentPlatform Platform
@@ -49,6 +51,14 @@ func (p *defaultPlatform) Elevate(args []string, env []string) error {
 
 func (p *defaultPlatform) ExecReplace(bin string, args []string, env []string) error {
 	return fmt.Errorf("exec replace not implemented for this platform")
+}
+
+func (p *defaultPlatform) DetectDistro() string {
+	return ""
+}
+
+func (p *defaultPlatform) DetectCAMethod() string {
+	return ""
 }
 
 func IsPrivileged() bool {
@@ -109,4 +119,12 @@ func EnsureDir(path string, perm os.FileMode) error {
 
 func JoinPath(elem ...string) string {
 	return filepath.Join(elem...)
+}
+
+func DetectDistro() string {
+	return Current().DetectDistro()
+}
+
+func DetectCAMethod() string {
+	return Current().DetectCAMethod()
 }

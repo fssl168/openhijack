@@ -8,11 +8,19 @@ export function DeleteConfig(arg1:string):Promise<string>;
 
 export function ExportConfig(arg1:string):Promise<string>;
 
+export function GenerateCACert():Promise<string>;
+
+export function GenerateServerCerts():Promise<string>;
+
+export function GetCertStatus():Promise<Record<string, any>>;
+
 export function GetConfigs():Promise<Array<main.ConfigInfo>>;
 
 export function GetLogs(arg1:number):Promise<Array<string>>;
 
 export function GetProviderDefaults(arg1:string):Promise<Record<string, string>>;
+
+export function GetRuntimeEnv():Promise<main.RuntimeEnv>;
 
 export function GetStatus():Promise<main.StatusInfo>;
 
@@ -30,9 +38,17 @@ export function InstallCACert():Promise<string>;
 
 export function LoadConfigFile(arg1:string):Promise<string>;
 
+export function LoadFullConfig(arg1:string):Promise<main.ConfigData>;
+
 export function OpenDirectoryDialog():Promise<string>;
 
 export function OpenFileDialog():Promise<string>;
+
+export function RegenerateAllCerts():Promise<string>;
+
+export function RemoveLocalCerts():Promise<string>;
+
+export function RunElevated():Promise<void>;
 
 export function SelectConfig(arg1:string):Promise<string>;
 
