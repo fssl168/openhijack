@@ -23,7 +23,7 @@ mapped_model_id = "mapped"
 
 [[config_groups]]
 name = "test"
-provider = "anthropic"
+provider = "made_up_unsupported"
 api_url = "https://example.com"
 `)
 
@@ -31,7 +31,7 @@ api_url = "https://example.com"
 	if err == nil {
 		t.Fatal("expected unsupported provider error")
 	}
-	if !strings.Contains(err.Error(), "尚未实现") {
+	if !strings.Contains(err.Error(), "不支持的 provider") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

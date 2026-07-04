@@ -1,8 +1,9 @@
 import { defineStore } from 'pinia'
+import type { ViewType } from '@/types'
 
 export const useUIStore = defineStore('ui', {
   state: () => ({
-    currentView: 'dashboard' as 'dashboard' | 'configs' | 'logs' | 'settings',
+    currentView: 'dashboard' as ViewType,
     sidebarCollapsed: false,
     configEditorOpen: false,
     editingConfig: null as any,
@@ -11,7 +12,7 @@ export const useUIStore = defineStore('ui', {
   }),
 
   actions: {
-    setView(view: 'dashboard' | 'configs' | 'logs' | 'settings') {
+    setView(view: ViewType) {
       this.currentView = view
     },
 

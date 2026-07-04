@@ -22,6 +22,7 @@ func writeProxyConfig(t *testing.T, content string) string {
 func TestSetupRoutesServesDefaultOpenAIModelsPath(t *testing.T) {
 	path := writeProxyConfig(t, `
 mapped_model_id = "mapped-model"
+auth_key = "test-secret-key-1234567890"
 
 [[config_groups]]
 name = "test"
@@ -35,6 +36,7 @@ api_url = "https://example.com"
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer test-secret-key-1234567890")
 	rec := httptest.NewRecorder()
 	server.setupRoutes().ServeHTTP(rec, req)
 

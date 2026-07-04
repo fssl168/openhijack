@@ -22,6 +22,15 @@ import {
   UninstallCACert,
   UpdateConfig,
   isRuntimeReady,
+  RunDoctor,
+  GetLastDoctorResults,
+  GetDoctorSummary,
+  GetAuditLogs,
+  GetAuditLogPath,
+  ClearAuditLogs,
+  GetWatcherStatus,
+  ReloadConfigManually,
+  onConfigReloaded,
 } from '../utils/runtime'
 import type {
   ConfigData,
@@ -31,6 +40,9 @@ import type {
   RuntimeEnv,
   StatusInfo,
   ProviderInfo,
+  DoctorResult,
+  AuditEntry,
+  WatcherStatus,
 } from '@/types'
 
 export class ConfigService {
@@ -328,9 +340,102 @@ export class SystemService {
   }
 }
 
+export class DoctorService {
+  static async runChecks(): Promise<DoctorResult[]> {
+    try {
+      const results = await RunDoctor()
+      return results || []
+    } catch {
+      return []
+    }
+  }
+
+  static async getLastResults(): Promise<DoctorResult[]> {
+    try {
+      const results = await GetLastDoctorResults()
+      return results || []
+    } catch {
+      return []
+    }
+  }
+
+  static async getSummary(): Promise<{ pass: number; warn: number; fail: number }> {
+    try {
+      const summary = await GetDoctorSummary()
+      return {
+        pass: summary?.pass || 0,
+        warn: summary?.warn || 0,
+        fail: summary?.fail || 0,
+      }
+    } catch {
+      return { pass: 0, warn: 0, fail: 0 }
+    }
+  }
+}
+
+export class AuditService {
+  static async getLogs(limit = 100, offset = 0): Promise<AuditEntry[]> {
+    try {
+      const entries = await GetAuditLogs(limit, offset)
+      return entries || []
+    } catch {
+      return []
+    }
+  }
+
+  static async getLogPath(): Promise<string> {
+    try {
+      return (await GetAuditLogPath()) || ''
+    } catch {
+      return ''
+    }
+  }
+
+  static async clearLogs(): Promise<{ success: boolean; error?: string }> {
+    try {
+      const msg = await ClearAuditLogs()
+      if (msg) {
+        return { success: false, error: msg }
+      }
+      return { success: true }
+    } catch (e: any) {
+      return { success: false, error: e?.message || '清空审计日志失败' }
+    }
+  }
+}
+
+export class WatcherService {
+  static async getStatus(): Promise<WatcherStatus | null> {
+    try {
+      return await GetWatcherStatus()
+    } catch {
+      return null
+    }
+  }
+
+  static async reloadManually(): Promise<{ success: boolean; error?: string }> {
+    try {
+      const msg = await ReloadConfigManually()
+      if (msg) {
+        return { success: false, error: msg }
+      }
+      return { success: true }
+    } catch (e: any) {
+      return { success: false, error: e?.message || '重载配置失败' }
+    }
+  }
+
+  static onConfigReloaded(handler: (payload: WatcherStatus) => void): void {
+    onConfigReloaded(handler)
+  }
+}
+
 export const Services = {
   config: ConfigService,
   proxy: ProxyService,
   provider: ProviderService,
   system: SystemService,
+  doctor: DoctorService,
+  audit: AuditService,
+  watcher: WatcherService,
 }

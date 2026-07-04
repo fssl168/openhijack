@@ -12,12 +12,18 @@ import (
 )
 
 const (
-	hostsMarker     = "# Added by OpenHijack"
+	HostsMarker = "# Added by OpenHijack"
 	hostsBackupName = "hosts.backup"
 )
 
 var hostsIPs = []string{"127.0.0.1", "::1"}
 var hostsDomains = []string{"api.openai.com", "openrouter.ai"}
+
+// Markers returns the hosts file marker string used by OpenHijack.
+func Markers() string { return HostsMarker }
+
+// Domains returns the list of domains managed by OpenHijack in the hosts file.
+func Domains() []string { return hostsDomains }
 
 func getHostsFilePath() string {
 	return platform.GetHostsPath()
@@ -75,7 +81,7 @@ func (hm *HostsManager) AddEntry(logf func(string, ...interface{})) error {
 		return fmt.Errorf("读取 hosts 文件失败: %w", err)
 	}
 
-	if bytes.Contains(content, []byte(hostsMarker)) {
+	if bytes.Contains(content, []byte(HostsMarker)) {
 		logf("hosts 文件中已存在 OpenHijack 条目，跳过添加")
 		return nil
 	}
@@ -85,7 +91,7 @@ func (hm *HostsManager) AddEntry(logf func(string, ...interface{})) error {
 	if len(content) > 0 && content[len(content)-1] != '\n' {
 		buf.WriteByte('\n')
 	}
-	buf.WriteString(hostsMarker)
+	buf.WriteString(HostsMarker)
 	buf.WriteByte('\n')
 
 	for _, domain := range hostsDomains {
@@ -113,7 +119,7 @@ func (hm *HostsManager) RemoveEntry(logf func(string, ...interface{})) error {
 		return fmt.Errorf("读取 hosts 文件失败: %w", err)
 	}
 
-	if !bytes.Contains(content, []byte(hostsMarker)) {
+	if !bytes.Contains(content, []byte(HostsMarker)) {
 		logf("hosts 文件中不存在 OpenHijack 条目，跳过移除")
 		return nil
 	}
@@ -162,7 +168,7 @@ func removeHostsBlock(content string) string {
 	skip := false
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.TrimSpace(line) == hostsMarker {
+		if strings.TrimSpace(line) == HostsMarker {
 			skip = true
 			continue
 		}

@@ -11,18 +11,19 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"strings"
 	"time"
 
 	"openhijack/internal/config"
 	"openhijack/internal/errors"
+	"openhijack/internal/proxy/provider"
 )
 
 type UpstreamTransport struct {
 	client    *http.Client
 	group     *config.ConfigGroup
 	config    *config.Config
-	promptSt  *SystemPromptStore
+	adapter   provider.ProviderAdapter
+	promptSt  *provider.SystemPromptStore
 	debugMode bool
 	logger    *slog.Logger
 }
@@ -53,18 +54,21 @@ func NewUpstreamTransport(cfg *config.Config, debugMode bool, disableSSLStrict b
 		Timeout:   0,
 	}
 
+	adapter, err := provider.GetAdapter(group.Provider)
+	if err != nil {
+		// Fallback: return a transport without an adapter (will error on forward)
+		logger.Error("failed to get provider adapter", "provider", group.Provider, "error", err)
+	}
+
 	return &UpstreamTransport{
 		client:    client,
 		group:     group,
 		config:    cfg,
-		promptSt:  NewSystemPromptStore(),
+		adapter:   adapter,
+		promptSt:  provider.NewSystemPromptStore(),
 		debugMode: debugMode,
 		logger:    logger,
 	}
-}
-
-func (t *UpstreamTransport) buildUpstreamURL() string {
-	return t.group.FullAPIURL("chat/completions")
 }
 
 func (t *UpstreamTransport) ForwardChatCompletions(ctx context.Context, requestID string, body []byte, isStream bool) (*http.Response, error) {
@@ -72,51 +76,29 @@ func (t *UpstreamTransport) ForwardChatCompletions(ctx context.Context, requestI
 		ctx = context.Background()
 	}
 
-	var reqData map[string]interface{}
-	if err := json.Unmarshal(body, &reqData); err != nil {
-		return nil, errors.Wrap(err, errors.ErrInvalidFormatValue, "failed to parse request JSON")
+	targetModel := t.config.TargetModelID()
+
+	// Apply system prompt overrides for OpenAI-compatible providers
+	adjustedBody, err := provider.ApplySystemPromptOverrides(body, t.promptSt)
+	if err != nil {
+		return nil, errors.Wrap(err, errors.ErrInternalError, "failed to apply system prompt overrides")
 	}
 
-	targetModel := t.config.TargetModelID()
-	reqData["model"] = targetModel
+	// Build the upstream request using the provider adapter
+	req, err := t.adapter.BuildUpstreamRequest(ctx, t.group, targetModel, adjustedBody, isStream)
+	if err != nil {
+		return nil, errors.Wrap(err, errors.ErrNetworkConnectionFailed, "failed to build upstream request")
+	}
 
 	if t.debugMode {
-		reqJSON, _ := json.MarshalIndent(reqData, "", "  ")
-		t.logger.Debug("upstream request body", "requestID", requestID, "body", string(reqJSON))
+		bodyBytes, _ := io.ReadAll(req.Body)
+		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		reqData, _ := json.MarshalIndent(bodyBytes, "", "  ")
+		t.logger.Debug("upstream request body", "requestID", requestID, "body", string(reqData))
 	}
 
-	t.applySystemPromptOverrides(requestID, reqData)
-
-	if isStream {
-		reqData["stream"] = true
-	}
-
-	modifiedBody, err := json.Marshal(reqData)
-	if err != nil {
-		return nil, errors.Wrap(err, errors.ErrInternalError, "failed to serialize request")
-	}
-
-	upstreamURL := t.buildUpstreamURL()
+	upstreamURL := t.adapter.GetUpstreamURL(t.group, isStream)
 	t.logger.Info("forwarding to upstream", "requestID", requestID, "url", upstreamURL, "model", targetModel, "stream", isStream)
-
-	req, err := http.NewRequestWithContext(ctx, "POST", upstreamURL, bytes.NewReader(modifiedBody))
-	if err != nil {
-		return nil, errors.Wrap(err, errors.ErrNetworkConnectionFailed, "failed to create upstream request")
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	if t.group.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+t.group.APIKey)
-	}
-
-	for key, value := range t.group.Headers {
-		req.Header.Set(key, value)
-		t.logger.Debug("applied custom header", "requestID", requestID, "key", key, "value", value)
-	}
-
-	if isStream {
-		req.Header.Set("Accept", "text/event-stream")
-	}
 
 	t.logger.Debug("request headers", "requestID", requestID, "headers", req.Header)
 
@@ -125,105 +107,6 @@ func (t *UpstreamTransport) ForwardChatCompletions(ctx context.Context, requestI
 		return nil, errors.Wrap(err, errors.ErrNetworkConnectionFailed, "upstream request failed")
 	}
 	return resp, nil
-}
-
-func (t *UpstreamTransport) applySystemPromptOverrides(requestID string, reqData map[string]interface{}) {
-	messages, ok := reqData["messages"].([]interface{})
-	if !ok {
-		return
-	}
-
-	var entries []PromptEntry
-	indexedHashes := make(map[int]string)
-
-	for i, msg := range messages {
-		msgMap, ok := msg.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		role, _ := msgMap["role"].(string)
-		if role != "system" && role != "developer" {
-			continue
-		}
-		text := extractSystemPromptText(msgMap["content"])
-		if text == "" {
-			continue
-		}
-		h := t.promptSt.ComputeHash(text)
-		indexedHashes[i] = h
-		entries = append(entries, PromptEntry{Hash: h, Text: text})
-	}
-
-	if len(entries) == 0 {
-		return
-	}
-
-	added, overrides := t.promptSt.CaptureAndGetOverrides(entries)
-	for _, h := range added {
-		t.logger.Info("captured system prompt", "requestID", requestID, "hash", h[:12])
-	}
-
-	if len(overrides) == 0 {
-		return
-	}
-
-	var newMessages []interface{}
-	changed := false
-	for i, msg := range messages {
-		h, hasHash := indexedHashes[i]
-		if !hasHash {
-			newMessages = append(newMessages, msg)
-			continue
-		}
-		override, hasOverride := overrides[h]
-		if !hasOverride {
-			newMessages = append(newMessages, msg)
-			continue
-		}
-		changed = true
-		if override == "" {
-			t.logger.Info("cleared system prompt", "requestID", requestID, "hash", h[:12])
-			continue
-		}
-		msgMap, _ := msg.(map[string]interface{})
-		replaced := make(map[string]interface{})
-		for k, v := range msgMap {
-			replaced[k] = v
-		}
-		replaced["content"] = override
-		newMessages = append(newMessages, replaced)
-		t.logger.Info("applied system prompt override", "requestID", requestID, "hash", h[:12])
-	}
-
-	if changed {
-		reqData["messages"] = newMessages
-	}
-}
-
-func extractSystemPromptText(content interface{}) string {
-	switch v := content.(type) {
-	case string:
-		return strings.TrimSpace(v)
-	case []interface{}:
-		var parts []string
-		for _, item := range v {
-			switch iv := item.(type) {
-			case string:
-				if t := strings.TrimSpace(iv); t != "" {
-					parts = append(parts, t)
-				}
-			case map[string]interface{}:
-				if text, ok := iv["text"].(string); ok {
-					if t := strings.TrimSpace(text); t != "" {
-						parts = append(parts, t)
-					}
-				}
-			}
-		}
-		return strings.Join(parts, "\n")
-	default:
-		return ""
-	}
 }
 
 func StreamSSE(resp *http.Response, w http.ResponseWriter, done chan struct{}) {

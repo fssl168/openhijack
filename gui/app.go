@@ -8,14 +8,17 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	rt "runtime"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"openhijack/internal/audit"
 	"openhijack/internal/cert"
 	"openhijack/internal/config"
+	"openhijack/internal/health"
 	"openhijack/internal/hosts"
 	"openhijack/internal/platform"
 	"openhijack/internal/proxy"
@@ -67,6 +70,11 @@ type App struct {
 	logBuffer  *LogBuffer
 	logChan    chan string
 	cleanupFn  func()
+
+	// doctorResults caches the most recent RunDoctor output so that
+	// the GUI can re-render without re-running the checks.
+	doctorMu       sync.Mutex
+	doctorResults  []health.CheckResult
 }
 
 type StatusInfo struct {
@@ -305,16 +313,22 @@ func (a *App) RunElevated() error {
 	}
 
 	opts := proxy.ServeOptions{
-		ConfigPath:    rootConfigFile,
-		Host:          "0.0.0.0",
-		Port:          port,
-		UseTLS:        true,
-		DebugMode:     false,
-		ForceStream:   false,
-		TLSCertFile:   tlsCertFile,
-		TLSKeyFile:    tlsKeyFile,
-		ExtraTLSCerts: certMgr.ExtraTLSCerts(),
-		CleanupFn:     a.cleanupFn,
+		ConfigPath:       rootConfigFile,
+		Host:             "0.0.0.0",
+		Port:             port,
+		UseTLS:           true,
+		DebugMode:        false,
+		ForceStream:      false,
+		TLSCertFile:      tlsCertFile,
+		TLSKeyFile:       tlsKeyFile,
+		DisableSSLStrict: false,
+		ExtraTLSCerts:    certMgr.ExtraTLSCerts(),
+		CleanupFn:        a.cleanupFn,
+		LogCallback: func(msg string) {
+			formatted := formatProxyLog(msg)
+			fmt.Printf("[DEBUG] proxy log: %s\n", formatted)
+			a.logProxy("%s", formatted)
+		},
 	}
 
 	server, err := proxy.NewProxyServer(opts)
@@ -635,7 +649,7 @@ func (a *App) StartProxy(configPath string, port int) string {
 	a.logProxy("✓ CA 证书已成功安装到系统")
 
 	if err := hostsMgr.AddEntry(a.logProxy); err != nil {
-		a.logProxy(fmt.Sprintf("修改 hosts 文件失败 (可忽略): %v", err))
+		a.logProxy("修改 hosts 文件失败 (可忽略): %v", err)
 	}
 
 	tlsCertFile, tlsKeyFile = certMgr.TLSCert()
@@ -645,12 +659,14 @@ func (a *App) StartProxy(configPath string, port int) string {
 		a.logProxy("清理: 移除 hosts 条目...")
 		cleanupHostsMgr := hosts.NewHostsManager(dataDirForCleanup)
 		if err := cleanupHostsMgr.RemoveEntry(a.logProxy); err != nil {
-			a.logProxy(fmt.Sprintf("清理 hosts 失败: %v", err))
+			a.logProxy("清理 hosts 失败: %v", err)
 		}
 
 		a.logProxy("清理: 移除系统 CA 信任...")
 		cert.RemoveCACert(a.logProxy)
 	}
+
+	auditLogPath := filepath.Join(dataDir, "audit.log")
 
 	opts := proxy.ServeOptions{
 		ConfigPath:    effectiveConfigPath,
@@ -663,6 +679,29 @@ func (a *App) StartProxy(configPath string, port int) string {
 		TLSKeyFile:    tlsKeyFile,
 		ExtraTLSCerts: certMgr.ExtraTLSCerts(),
 		CleanupFn:     a.cleanupFn,
+		LogCallback: func(msg string) {
+			formatted := formatProxyLog(msg)
+			fmt.Printf("[DEBUG] proxy log: %s\n", formatted)
+			a.logProxy("%s", formatted)
+		},
+		// Phase A: enable audit logging + hot-reload watcher by default
+		// so the GUI shows real-time activity and recovers from
+		// config edits without a restart.
+		AuditLogPath: auditLogPath,
+		WatchConfig:  true,
+		OnConfigReloaded: func(status proxy.WatcherStatus) {
+			// Emit to the frontend so stores can refresh UI and
+			// notify the user. The payload shape matches the
+			// WatcherStatus TypeScript interface in types/index.ts.
+			if a.ctx != nil {
+				wruntime.EventsEmit(a.ctx, "config:reloaded", status)
+			}
+			if status.LastError != "" {
+				a.logProxy("配置热重载失败: %s", status.LastError)
+			} else {
+				a.logProxy("配置已热重载: %s", status.LastReload)
+			}
+		},
 	}
 
 	server, err := proxy.NewProxyServer(opts)
@@ -676,7 +715,7 @@ func (a *App) StartProxy(configPath string, port int) string {
 			if strings.Contains(err.Error(), "permission denied") || strings.Contains(err.Error(), "bind:") {
 				errMsg = fmt.Sprintf("端口 %d 绑定失败 (权限不足): %v\n建议: 使用端口 8443 或以 sudo 运行应用", port, err)
 			}
-			a.logProxy(errMsg)
+			a.logProxy("%s", errMsg)
 			a.mu.Lock()
 			a.running = false
 			a.mu.Unlock()
@@ -1196,6 +1235,73 @@ func (a *App) ExportConfig(configPath string) string {
 	return string(data)
 }
 
+func formatProxyLog(msg string) string {
+	timePattern := `time=(\d{2}:\d{2}:\d{2}\.\d{3})`
+	msgPattern := `msg="([^"]+)"|msg=([^\s]+)`
+	idPattern := `\b(id|requestID)=([^\s]+)`
+	urlPattern := `\burl=(\S+)`
+	modelPattern := `\bmodel=(\S+)`
+	streamPattern := `\bstream=(true|false)`
+
+	timeMatches := regexp.MustCompile(timePattern).FindStringSubmatch(msg)
+	var timeStr string
+	if len(timeMatches) > 1 {
+		timeStr = timeMatches[1]
+	} else {
+		timeStr = fmt.Sprintf("%s.%03d", time.Now().Format("15:04:05"), time.Now().Nanosecond()/1000000)
+	}
+
+	msgMatches := regexp.MustCompile(msgPattern).FindStringSubmatch(msg)
+	var content string
+	if len(msgMatches) > 1 && msgMatches[1] != "" {
+		content = msgMatches[1]
+	} else if len(msgMatches) > 2 && msgMatches[2] != "" {
+		content = msgMatches[2]
+	}
+
+	if content == "" {
+		parts := strings.Fields(msg)
+		for i, p := range parts {
+			if !strings.Contains(p, "=") || i == 0 {
+				if content == "" {
+					content = p
+				} else {
+					content += " " + p
+				}
+				continue
+			}
+			break
+		}
+		if content == "" {
+			content = strings.TrimSpace(msg)
+		}
+	}
+
+	idMatches := regexp.MustCompile(idPattern).FindStringSubmatch(msg)
+	if len(idMatches) > 2 {
+		content = fmt.Sprintf("[id=%s] %s", idMatches[2], content)
+	}
+
+	hasURL := false
+	urlMatches := regexp.MustCompile(urlPattern).FindStringSubmatch(msg)
+	if len(urlMatches) > 1 && !strings.Contains(content, urlMatches[1]) {
+		content = fmt.Sprintf("%s → %s", content, urlMatches[1])
+		hasURL = true
+	}
+
+	modelMatches := regexp.MustCompile(modelPattern).FindStringSubmatch(msg)
+	if len(modelMatches) > 1 && modelMatches[1] != "" && !strings.Contains(content, modelMatches[1]) {
+		content = fmt.Sprintf("%s (model=%s)", content, modelMatches[1])
+	}
+
+	streamMatches := regexp.MustCompile(streamPattern).FindStringSubmatch(msg)
+	if len(streamMatches) > 1 && !hasURL {
+		content = fmt.Sprintf("%s [stream=%s]", content, streamMatches[1])
+	}
+
+	return fmt.Sprintf("[openhijack] %s [INFO] %s", timeStr, content)
+}
+
 func mkdirAll(dir string) error {
 	err := os.MkdirAll(dir, 0755)
 	if err != nil {
@@ -1396,4 +1502,197 @@ func (a *App) LoadFullConfig(filePath string) ConfigData {
 		AuthKey:       cfg.AuthKey,
 		ConfigGroups:  groups,
 	}
+}
+
+// =====================================================================
+// Phase B: Doctor / AuditLog / Watcher Wails bindings
+// =====================================================================
+
+// --- B1: Doctor --------------------------------------------------------
+
+// RunDoctor executes all health checks and returns the structured
+// results. The results are also cached so GetLastDoctorResults can
+// return them without re-running the checks.
+//
+// dataDir defaults to platform.GetDataDir() and configPath defaults
+// to the active proxy config (or the platform default config if no
+// proxy is running).
+func (a *App) RunDoctor() []health.CheckResult {
+	dataDir := a.getDataDir()
+	configPath := a.resolveActiveConfigPath()
+
+	results := health.RunAllChecks(health.Options{
+		DataDir:    dataDir,
+		ConfigPath: configPath,
+	})
+
+	a.doctorMu.Lock()
+	a.doctorResults = results
+	a.doctorMu.Unlock()
+
+	a.logProxy("Doctor 检查完成: %d 项", len(results))
+	return results
+}
+
+// GetLastDoctorResults returns the cached results from the most
+// recent RunDoctor call. Returns nil if RunDoctor has never been
+// called in this session.
+func (a *App) GetLastDoctorResults() []health.CheckResult {
+	a.doctorMu.Lock()
+	defer a.doctorMu.Unlock()
+	// Return a defensive copy so the GUI can't mutate our cache.
+	out := make([]health.CheckResult, len(a.doctorResults))
+	copy(out, a.doctorResults)
+	return out
+}
+
+// GetDoctorSummary returns the count of PASS/WARN/FAIL results from
+// the most recent RunDoctor call. Returns all zeros if RunDoctor
+// has never been called.
+func (a *App) GetDoctorSummary() map[string]int {
+	a.doctorMu.Lock()
+	results := a.doctorResults
+	a.doctorMu.Unlock()
+
+	pass, warn, fail := health.Summary(results)
+	return map[string]int{
+		"pass": pass,
+		"warn": warn,
+		"fail": fail,
+	}
+}
+
+// --- B2: AuditLog ------------------------------------------------------
+
+// GetAuditLogs reads the audit log file (JSON Lines) and returns
+// up to `limit` entries starting from `offset`. The most recent
+// entries are returned first (file is read backwards at the entry
+// level). Pass limit=0 to use the default of 100.
+//
+// Returns an empty slice if audit logging is disabled, the proxy is
+// not running, or the log file does not yet exist.
+func (a *App) GetAuditLogs(limit, offset int) []audit.AuditEntry {
+	if limit <= 0 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	path := a.GetAuditLogPath()
+	if path == "" {
+		return []audit.AuditEntry{}
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		// File may not exist yet — that's fine, return empty.
+		return []audit.AuditEntry{}
+	}
+
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	total := len(lines)
+
+	// Parse from newest to oldest. Skip malformed lines silently —
+	// a corrupted line should not break the whole view.
+	entries := make([]audit.AuditEntry, 0, limit)
+	for i := total - 1; i >= 0 && len(entries) < limit; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		var entry audit.AuditEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		entries = append(entries, entry)
+	}
+
+	// Apply offset (drop the first `offset` entries).
+	if offset >= len(entries) {
+		return []audit.AuditEntry{}
+	}
+	return entries[offset:]
+}
+
+// GetAuditLogPath returns the on-disk path of the audit log file,
+// or an empty string if audit logging is disabled or the proxy is
+// not running. Used by the GUI to show "open log file" actions.
+func (a *App) GetAuditLogPath() string {
+	a.mu.RLock()
+	server := a.server
+	a.mu.RUnlock()
+
+	if server == nil {
+		return ""
+	}
+	return server.AuditLogPath()
+}
+
+// ClearAuditLogs truncates the audit log file. Use with care —
+// this is irreversible. Returns an error message string (empty on
+// success, matching the Wails binding convention used elsewhere).
+func (a *App) ClearAuditLogs() string {
+	path := a.GetAuditLogPath()
+	if path == "" {
+		return "审计日志未启用"
+	}
+	if err := os.Truncate(path, 0); err != nil {
+		return fmt.Sprintf("清空审计日志失败: %v", err)
+	}
+	a.logProxy("审计日志已清空")
+	return ""
+}
+
+// --- B3: Watcher ------------------------------------------------------
+
+// GetWatcherStatus returns the current watcher state for the
+// running proxy server. Returns a zero-value WatcherStatus
+// (Running=false) if the proxy is not running.
+func (a *App) GetWatcherStatus() proxy.WatcherStatus {
+	a.mu.RLock()
+	server := a.server
+	a.mu.RUnlock()
+
+	if server == nil {
+		return proxy.WatcherStatus{}
+	}
+	return server.GetWatcherStatus()
+}
+
+// ReloadConfigManually forces a config reload on the running proxy
+// server. Returns an error message string (empty on success).
+func (a *App) ReloadConfigManually() string {
+	a.mu.RLock()
+	server := a.server
+	a.mu.RUnlock()
+
+	if server == nil {
+		return "代理服务未运行"
+	}
+	if err := server.ReloadConfigManually(); err != nil {
+		return fmt.Sprintf("重载配置失败: %v", err)
+	}
+	return ""
+}
+
+// resolveActiveConfigPath returns the path of the config currently
+// in use by the running proxy, falling back to the platform default
+// when no proxy is running. Used by RunDoctor to mirror the CLI's
+// resolveConfigPath("") behavior.
+func (a *App) resolveActiveConfigPath() string {
+	a.mu.RLock()
+	cfg := a.lastConfig
+	a.mu.RUnlock()
+	if cfg != "" {
+		if _, err := os.Stat(cfg); err == nil {
+			return cfg
+		}
+	}
+	// Fall back to the platform default.
+	configDir, err := platform.GetConfigDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(configDir, "config.toml")
 }

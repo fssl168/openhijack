@@ -15,7 +15,10 @@ import type {
   RuntimeEnv,
   CertificateInfo,
   StatusInfo,
-  ProxyMeta
+  ProxyMeta,
+  DoctorResult,
+  AuditEntry,
+  WatcherStatus
 } from '@/types'
 
 export const CreateConfig = (data: ConfigData): Promise<string | null> => getWailsFunc('CreateConfig')(data)
@@ -47,6 +50,25 @@ export const StartProxy = (configPath: string, port: number): Promise<string> =>
 export const StopProxy = (): Promise<string> => getWailsFunc('StopProxy')()
 export const TestConnection = (path: string): Promise<TestResult> => getWailsFunc('TestConnection')(path)
 export const UpdateConfig = (data: ConfigData): Promise<string> => getWailsFunc('UpdateConfig')(data)
+
+// --- Phase B bindings: Doctor / AuditLog / Watcher ---------------------
+export const RunDoctor = (): Promise<DoctorResult[]> => getWailsFunc('RunDoctor')()
+export const GetLastDoctorResults = (): Promise<DoctorResult[]> => getWailsFunc('GetLastDoctorResults')()
+export const GetDoctorSummary = (): Promise<Record<string, number>> => getWailsFunc('GetDoctorSummary')()
+export const GetAuditLogs = (limit: number, offset: number): Promise<AuditEntry[]> => getWailsFunc('GetAuditLogs')(limit, offset)
+export const GetAuditLogPath = (): Promise<string> => getWailsFunc('GetAuditLogPath')()
+export const ClearAuditLogs = (): Promise<string> => getWailsFunc('ClearAuditLogs')()
+export const GetWatcherStatus = (): Promise<WatcherStatus> => getWailsFunc('GetWatcherStatus')()
+export const ReloadConfigManually = (): Promise<string> => getWailsFunc('ReloadConfigManually')()
+
+// Subscribe to config:reloaded events emitted by the Go backend
+// after every watcher reload attempt (success or failure).
+export const onConfigReloaded = (handler: (payload: WatcherStatus) => void): void => {
+  const runtime = (window as any).runtime
+  if (runtime && typeof runtime.EventsOn === 'function') {
+    runtime.EventsOn('config:reloaded', handler)
+  }
+}
 
 // 导出类型（用于向后兼容）
 export type { ProxyMeta } from '@/types'

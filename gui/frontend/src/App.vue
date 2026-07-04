@@ -4,11 +4,14 @@ import Dashboard from './views/Dashboard.vue'
 import ConfigManager from './views/ConfigManager.vue'
 import LogViewer from './views/LogViewer.vue'
 import Settings from './views/Settings.vue'
+import Doctor from './views/Doctor.vue'
+import AuditLog from './views/AuditLog.vue'
 import OnboardingWizard from './components/OnboardingWizard.vue'
 import { useUIStore } from './stores/ui'
 import { useProxyStore } from './stores/proxy'
 import { useOnboardingStore } from './stores/onboarding'
 import { isRuntimeReady } from './utils/runtime'
+import { WatcherService } from './services'
 
 const uiStore = useUIStore()
 const proxyStore = useProxyStore()
@@ -18,12 +21,23 @@ const proxyStatus = computed(() => proxyStore.running)
 
 onMounted(async () => {
   await onboardingStore.initialize()
-  
+
   setTimeout(() => {
     if (isRuntimeReady()) {
       proxyStore.startPolling()
     }
   }, 300)
+
+  // Phase D4: subscribe to config:reloaded events so the UI
+  // refreshes status and notifies the user after every hot-reload.
+  WatcherService.onConfigReloaded((payload) => {
+    if (payload.last_error) {
+      uiStore.showNotification(`配置重载失败: ${payload.last_error}`, 'error', 5000)
+    } else if (payload.last_reload) {
+      uiStore.showNotification('配置已热重载', 'success', 3000)
+    }
+    proxyStore.getStatus()
+  })
 })
 
 onUnmounted(() => {
@@ -34,6 +48,8 @@ const navItems = [
   { view: 'dashboard' as const, label: '仪表盘', icon: '📋', ariaLabel: '切换到仪表盘视图' },
   { view: 'configs' as const, label: '配置管理', icon: '⚙️', ariaLabel: '切换到配置管理视图' },
   { view: 'logs' as const, label: '日志', icon: '📊', ariaLabel: '切换到日志查看器' },
+  { view: 'doctor' as const, label: '健康检查', icon: '🩺', ariaLabel: '切换到健康检查视图' },
+  { view: 'audit' as const, label: '审计日志', icon: '📜', ariaLabel: '切换到审计日志视图' },
   { view: 'settings' as const, label: '设置', icon: '❓', ariaLabel: '切换到系统设置' },
 ]
 
@@ -102,6 +118,8 @@ function handleNavClick(view: string) {
       <Dashboard v-show="uiStore.currentView === 'dashboard'" role="tabpanel" :aria-label="'仪表盘面板'" />
       <ConfigManager v-show="uiStore.currentView === 'configs'" role="tabpanel" :aria-label="'配置管理面板'" />
       <LogViewer v-show="uiStore.currentView === 'logs'" role="tabpanel" :aria-label="'日志查看器面板'" />
+      <Doctor v-show="uiStore.currentView === 'doctor'" role="tabpanel" :aria-label="'健康检查面板'" />
+      <AuditLog v-show="uiStore.currentView === 'audit'" role="tabpanel" :aria-label="'审计日志面板'" />
       <Settings v-show="uiStore.currentView === 'settings'" role="tabpanel" :aria-label="'系统设置面板'" />
     </main>
 

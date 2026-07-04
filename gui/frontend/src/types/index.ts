@@ -182,7 +182,7 @@ export interface RuntimeEnv {
 // 6. UI/通知类型 (UI & Notifications)
 // ============================================
 
-export type ViewType = 'dashboard' | 'config' | 'logs' | 'settings'
+export type ViewType = 'dashboard' | 'config' | 'configs' | 'logs' | 'settings' | 'doctor' | 'audit'
 
 export type NotificationType = 'success' | 'error' | 'warning' | 'info'
 
@@ -280,4 +280,34 @@ export interface CertificateInfo {
   fingerprint_sha256: string
   installed: boolean
   trusted_by_system: boolean
+}
+
+// ============================================
+// 11. 健康检查 / 审计 / 热重载类型 (Phase B bindings)
+// ============================================
+
+export interface DoctorResult {
+  name: string
+  status: 'PASS' | 'WARN' | 'FAIL'
+  detail: string
+  fix_hint?: string
+}
+
+export interface AuditEntry {
+  timestamp: string
+  request_id: string
+  method: string
+  path: string
+  status: number
+  upstream?: string
+  model?: string
+  duration_ms: string
+  client_ip?: string
+  error?: string
+}
+
+export interface WatcherStatus {
+  running: boolean
+  last_reload?: string
+  last_error?: string
 }

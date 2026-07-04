@@ -22,7 +22,7 @@ import (
 const (
 	defaultListenHost = ""
 	defaultListenPort = 443
-	fallbackPort     = 8443
+	fallbackPort      = 8443
 )
 
 const defaultConfigTemplate = `# OpenHijack 配置模板
@@ -86,6 +86,8 @@ func main() {
 	case "paths":
 		pathsCmd.Parse(os.Args[2:])
 		printPaths()
+	case "doctor":
+		runDoctor()
 	case "help", "-h", "--help":
 		printUsage()
 	default:
@@ -102,6 +104,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  openhijack serve [选项]    启动代理服务器 (默认 HTTPS:443)\n")
 	fmt.Fprintf(os.Stderr, "  openhijack cleanup         移除 hosts、系统 CA 和本地证书\n")
 	fmt.Fprintf(os.Stderr, "  openhijack paths           显示数据路径\n")
+	fmt.Fprintf(os.Stderr, "  openhijack doctor          健康检查报告\n")
 	fmt.Fprintf(os.Stderr, "  openhijack elevate         权限提升并启动 (sudo)\n")
 	fmt.Fprintf(os.Stderr, "  openhijack install         Linux 安装脚本 (需 sudo)\n\n")
 	fmt.Fprintf(os.Stderr, "init 选项:\n")
@@ -298,8 +301,11 @@ func runServe(configPath string, host string, port int, debug bool, disableSSLSt
 		ForceStream:      forceStream,
 		TLSCertFile:      tlsCertFile,
 		TLSKeyFile:       tlsKeyFile,
-		ExtraTLSCerts:    extraTLSCerts,
-		CleanupFn:        cleanupFn,
+		LogCallback: func(msg string) {
+			logger.Print(msg)
+		},
+		ExtraTLSCerts: extraTLSCerts,
+		CleanupFn:     cleanupFn,
 	}
 
 	server, err := proxy.NewProxyServer(opts)
