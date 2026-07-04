@@ -87,21 +87,43 @@ func TestIsEncrypted(t *testing.T) {
 }
 
 func TestValidateMasterPassword(t *testing.T) {
-	tests := []struct{
+	tests := []struct {
+		name     string
 		password string
 		valid    bool
 	}{
-		{"Valid complex password: Abcdef1!@#", true},
-		{"Too short: short", false},
-		{"No uppercase: lowercase1!", false},
-		{"No lowercase: UPPERCASE1!", false},
-		{"No digit: NoDigits!!", false},
-		{"No special char: Abcdefgh12", false},
-		{"Valid with 12 chars: Abcd1234!@#", true},
+		// 合法密码：长度 ≥16，含大写/小写/数字/特殊字符，且无连续模式
+		{"Valid complex password", "Xy7!kg#2pL@mNq9$wR", true},
+		{"Valid with 16 chars", "Zx1!pq9@Mt5#nr8$", true},
+
+		// 长度不足 16
+		{"Too short", "short", false},
+
+		// 缺少大写字母
+		{"No uppercase", "lowercase1!abcdef", false},
+
+		// 缺少小写字母
+		{"No lowercase", "UPPERCASE1!ABCDEF", false},
+
+		// 缺少数字（长度 ≥16 但无 digit）
+		{"No digit", "NoDigitsHereMeee!!", false},
+
+		// 缺少特殊字符（长度 ≥16 但无特殊字符，且无连续模式）
+		{"No special char", "Zxg5Htq9Pmn7Kwf3L", false},
+
+		// 含连续模式 abcd
+		{"Contains sequential abcd", "Abcd1234!@#xyzM", false},
+		// 含连续模式 1234
+		{"Contains sequential 1234", "Pqrs5678!@#1234M", false},
+		// 含连续键盘模式 asdf
+		{"Contains qwerty pattern", "Qwerty1!@#abcdeX", false},
+
+		// 含连续重复字符
+		{"Contains repeating aaaa", "Aaaabcd123!@#xY", false},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.password[:min(len(tt.password), 20)], func(t *testing.T) {
+		t.Run(tt.name, func(t *testing.T) {
 			result := ValidateMasterPassword(tt.password)
 			if result != tt.valid {
 				t.Errorf("ValidateMasterPassword(%q) = %v, want %v", tt.password, result, tt.valid)

@@ -160,7 +160,8 @@ func deriveKeyAndGCM(password string, salt []byte) (key []byte, gcm cipher.AEAD,
 }
 
 func IsEncrypted(value string) bool {
-	return len(value) > 4 && value[:4] == Prefix
+	// 仅需检查字符串以 "enc:" 前缀开头；与测试用例 IsEncrypted("enc:") = true 对齐。
+	return strings.HasPrefix(value, Prefix)
 }
 
 func parseEncryptedString(s string) (*EncryptedValue, error) {
@@ -168,20 +169,22 @@ func parseEncryptedString(s string) (*EncryptedValue, error) {
 		return nil, ErrInvalidCiphertext
 	}
 
-	parts := s[4:]
-	var enc EncryptedValue
+	// NOTE: 旧实现使用 fmt.Sscanf("%s:%s:...", ...) 解析，但 Go 的 %s 会读取到
+	// 空白为止，导致整个冒号分隔的字符串被第一个 %s 完全吞掉，n 永远为 1。
+	// 改用 strings.SplitN 按 ":" 切分，可正确解析 7 段。
+	parts := strings.SplitN(s[len(Prefix):], ":", 7)
+	if len(parts) != 7 {
+		return nil, fmt.Errorf("%w: invalid format (expected 7 parts, got %d)", ErrInvalidCiphertext, len(parts))
+	}
 
-	n, err := fmt.Sscanf(parts, "%s:%s:%s:%s:%s:%s:%s",
-		&enc.Version,
-		&enc.Algorithm,
-		&enc.Mode,
-		&enc.Salt,
-		&enc.IV,
-		&enc.Ciphertext,
-		&enc.Tag,
-	)
-	if err != nil || n != 7 {
-		return nil, fmt.Errorf("%w: invalid format (expected 7 parts, got %d)", ErrInvalidCiphertext, n)
+	enc := EncryptedValue{
+		Version:    parts[0],
+		Algorithm:  parts[1],
+		Mode:       parts[2],
+		Salt:       parts[3],
+		IV:         parts[4],
+		Ciphertext: parts[5],
+		Tag:        parts[6],
 	}
 
 	if enc.Version != Version {
@@ -198,11 +201,21 @@ func parseEncryptedString(s string) (*EncryptedValue, error) {
 }
 
 func GenerateMasterPassword() (string, error) {
-	bytes := make([]byte, 32)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", fmt.Errorf("generate master password failed: %w", err)
+	// 重试生成，直到通过 ValidateMasterPassword。
+	// base64 编码 32 字节有时会随机产生 "fedc"、"1234" 等连续模式，
+	// 这类密码会被 ValidateMasterPassword 正确拒绝，因此需要重试。
+	const maxAttempts = 10
+	for i := 0; i < maxAttempts; i++ {
+		bytes := make([]byte, 32)
+		if _, err := rand.Read(bytes); err != nil {
+			return "", fmt.Errorf("generate master password failed: %w", err)
+		}
+		password := base64.URLEncoding.EncodeToString(bytes)
+		if ValidateMasterPassword(password) {
+			return password, nil
+		}
 	}
-	return base64.URLEncoding.EncodeToString(bytes), nil
+	return "", fmt.Errorf("failed to generate a valid master password after %d attempts", maxAttempts)
 }
 
 func ValidateMasterPassword(password string) bool {
